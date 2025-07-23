@@ -1,0 +1,5 @@
+transformers
+torch
+stix2
+spacy
+seqeval
