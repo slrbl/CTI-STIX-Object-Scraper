@@ -12,7 +12,7 @@ TBD
 You need to install Ollama on your local machines. More details can be found at https://ollama.com.
 
 
-### Using a Python virtual env
+## Using a Python virtual env
 ```shell
 python -m venv stix_ner
 source stix_ner/bin/activate
@@ -20,7 +20,7 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### Settings file
+## Settings file
 Copy config.template to config.ini and adjust it according to your needs.
 You can also create a new settings file as showed in the following example:
 ```shell
@@ -62,7 +62,7 @@ This is an example of testing and getting extraction performance:
 python ner.py -e 'MALWARE' -t ../data/annotated/stix_ner_synthetic_reviewed_sample_for_testing.json
 ```
 
-### Using the API
+## Using the API
 Launching the API
 ```shell
 uvicorn api:app --reload
