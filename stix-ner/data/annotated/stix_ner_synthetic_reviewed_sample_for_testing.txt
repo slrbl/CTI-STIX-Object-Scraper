@@ -1,0 +1,50 @@
+{"text": "Conti infections were first reported in USA in Q4 2023.", "labels": [[0, 5, "MALWARE"], [40, 43, "COUNTRY"]]}
+{"text": "Researchers linked TrickBot to the threat actor APT28 in Q4 2023.", "labels": [[19, 27, "MALWARE"], [48, 53, "THREAT_ACTOR"]]}
+{"text": "Lazarus Group launched a credential dumping attack using Mimikatz and http://malicious[.]site.", "labels": [[57, 65, "TOOL"],[25, 43, "ATTACK_PATTERN"],[0, 13, "THREAT_ACTOR"],[70, 93, "INDICATOR"]]}
+{"text": "DarkHydrus launched a spearphishing attack using Mimikatz and a1b2c3d4e5f6g7h8i9j0.", "labels": [[0, 10, "THREAT_ACTOR"], [22, 35, "ATTACK_PATTERN"], [49, 57, "TOOL"]]}
+{"text": "The tool Metasploit was deployed alongside TrickBot during the campaign.", "labels": [[9, 19, "TOOL"], [43, 51, "MALWARE"]]}
+{"text": "DarkHydrus exploited CVE-2021-44228 in attacks throughout March 2022.", "labels": [[0, 10, "THREAT_ACTOR"], [21, 35, "VULNERABILITY"]]}
+{"text": "Ryuk infections were first reported in USA in January 2021.", "labels": [[0, 4, "MALWARE"], [39, 42, "COUNTRY"]]}
+{"text": "Emotet infections were first reported in USA in Spring 2020.", "labels": [[0, 6, "MALWARE"], [41, 44, "COUNTRY"]]}
+{"text": "FIN7 used QakBot to target government organizations in Iran.", "labels": [[0, 4, "THREAT_ACTOR"], [10, 16, "MALWARE"], [27, 37, "SECTOR"],[55, 59, "COUNTRY"]]}
+{"text": "Cobalt Group exploited CVE-2021-44228 in attacks throughout March 2022.", "labels": [[23, 37, "VULNERABILITY"],[0, 12, "THREAT_ACTOR"]]}
+{"text": "The tool Metasploit was deployed alongside Conti during the campaign.", "labels": [[9, 19, "TOOL"], [43, 48, "MALWARE"]]}
+{"text": "APT28 launched a SQL injection attack using Mimikatz and a1b2c3d4e5f6g7h8i9j0.", "labels": [[0, 5, "THREAT_ACTOR"], [17, 30, "ATTACK_PATTERN"],[44, 52, "TOOL"]]}
+{"text": "APT28 launched a SQL injection attack using Mimikatz and 8.8.8.8.", "labels": [[0, 5, "THREAT_ACTOR"], [44, 52, "TOOL"]]}
+{"text": "The tool Cobalt Strike was deployed alongside Ryuk during the campaign.", "labels": [[46, 50, "MALWARE"]]}
+{"text": "Indicators such as a1b2c3d4e5f6g7h8i9j0 were associated with DarkHydrus.", "labels": [[19, 39, "INDICATOR"],[61, 71, "THREAT_ACTOR"]]}
+{"text": "Researchers linked TrickBot to the threat actor Lazarus Group in Q4 2023.", "labels": [[19, 27, "MALWARE"],[48, 61, "THREAT_ACTOR"]]}
+{"text": "The tool PowerShell was deployed alongside TrickBot during the campaign.", "labels": [[9, 19, "TOOL"], [43, 51, "MALWARE"]]}
+{"text": "Conti infections were first reported in Russia in March 2022.", "labels": [[0, 5, "MALWARE"], [40, 46, "COUNTRY"]]}
+{"text": "Researchers linked Emotet to the threat actor APT28 in January 2021.", "labels": [[19, 25, "MALWARE"], [46, 51, "THREAT_ACTOR"]]}
+{"text": "Researchers linked QakBot to the threat actor Lazarus Group in Spring 2020.", "labels": [[19, 25, "MALWARE"],[46, 59, "THREAT_ACTOR"]]}
+{"text": "APT28 launched a credential dumping attack using Cobalt Strike and example.com.", "labels": [[0, 5, "THREAT_ACTOR"],[67, 88, "INDICATOR"]]}
+{"text": "Lazarus Group exploited CVE-2017-0144 in attacks throughout January 2021.", "labels": [[24, 37, "VULNERABILITY"],[0, 13, "THREAT_ACTOR"]]}
+{"text": "Researchers linked TrickBot to the threat actor APT28 in March 2022.", "labels": [[19, 27, "MALWARE"], [48, 53, "THREAT_ACTOR"]]}
+{"text": "Conti infections were first reported in North Korea in Q4 2023.", "labels": [[0, 5, "MALWARE"]]}
+{"text": "The tool PowerShell was deployed alongside TrickBot during the campaign.", "labels": [[9, 19, "TOOL"], [43, 51, "MALWARE"]]}
+{"text": "A known attack pattern, credential dumping, was observed in use by Cobalt Group.", "labels": [[67, 79, "THREAT_ACTOR"],[24, 42, "ATTACK_PATTERN"]]}
+{"text": "TrickBot infections were first reported in USA in January 2021.", "labels": [[0, 8, "MALWARE"], [43, 46, "COUNTRY"]]}
+{"text": "The tool Metasploit was deployed alongside TrickBot during the campaign.", "labels": [[9, 19, "TOOL"], [43, 51, "MALWARE"]]}
+{"text": "Conti infections were first reported in USA in January 2021.", "labels": [[0, 5, "MALWARE"], [40, 43, "COUNTRY"]]}
+{"text": "A known attack pattern, spearphishing, was observed in use by DarkHydrus.", "labels": [[62, 72, "THREAT_ACTOR"],[24, 37, "ATTACK_PATTERN"]]}
+{"text": "Ryuk infections were first reported in China in Q4 2023.", "labels": [[0, 4, "MALWARE"], [39, 44, "COUNTRY"]]}
+{"text": "A known attack pattern, pass-the-hash, was observed in use by Lazarus Group.", "labels": [[24, 37, "ATTACK_PATTERN"]]}
+{"text": "FIN7 exploited CVE-2020-0601 in attacks throughout Q4 2023.", "labels": [[0, 4, "THREAT_ACTOR"], [15, 28, "VULNERABILITY"]]}
+{"text": "DarkHydrus exploited CVE-2020-0601 in attacks throughout March 2022.", "labels": [[0, 10, "THREAT_ACTOR"], [21, 34, "VULNERABILITY"]]}
+{"text": "Cobalt Group exploited CVE-2017-0144 in attacks throughout Q4 2023.", "labels": [[23, 36, "VULNERABILITY"],[0, 12, "THREAT_ACTOR"]]}
+{"text": "A known attack pattern, pass-the-hash, was observed in use by APT28.", "labels": [[24, 37, "THREAT_ACTOR"]]}
+{"text": "FIN7 exploited CVE-2017-0144 in attacks throughout March 2022.", "labels": [[0, 4, "THREAT_ACTOR"], [15, 28, "VULNERABILITY"]]}
+{"text": "FIN7 launched a SQL injection attack using PowerShell and 8.8.8.8.", "labels": [[0, 4, "THREAT_ACTOR"], [43, 53, "TOOL"],[16, 29, "ATTACK_PATTERN"]]}
+{"text": "A known attack pattern, pass-the-hash, was observed in use by APT28.", "labels": [[24, 37, "THREAT_ACTOR"]]}
+{"text": "APT28 used Ryuk to target financial organizations in Russia.", "labels": [[0, 5, "THREAT_ACTOR"], [11, 15, "MALWARE"], [26, 35, "SECTOR"]]}
+{"text": "A known attack pattern, pass-the-hash, was observed in use by APT28.", "labels": [[24, 37, "THREAT_ACTOR"]]}
+{"text": "Cobalt Group launched a pass-the-hash attack using PowerShell and 8.8.8.8.", "labels": [[24, 37, "ATTACK_PATTERN"], [51, 61, "TOOL"],[0, 12, "THREAT_ACTOR"]]}
+{"text": "TrickBot infections were first reported in North Korea in Q4 2023.", "labels": [[0, 8, "MALWARE"]]}
+{"text": "A known attack pattern, credential dumping, was observed in use by Lazarus Group.", "labels": [[67, 80, "THREAT_ACTOR"],[24, 42, "ATTACK_PATTERN"]]}
+{"text": "The tool Mimikatz was deployed alongside Emotet during the campaign.", "labels": [[9, 17, "TOOL"], [41, 47, "MALWARE"]]}
+{"text": "The tool Empire was deployed alongside Emotet during the campaign.", "labels": [[9, 15, "TOOL"], [39, 45, "MALWARE"]]}
+{"text": "Lazarus Group used Conti to target healthcare organizations in USA.", "labels": [[19, 24, "MALWARE"], [35, 45, "SECTOR"],[0, 13, "THREAT_ACTOR"]]}
+{"text": "A known attack pattern, SQL injection, was observed in use by Lazarus Group.", "labels": [[62, 75, "THREAT_ACTOR"],[24, 37, "ATTACK_PATTERN"]]}
+{"text": "DarkHydrus exploited CVE-2021-44228 in attacks throughout Q4 2023.", "labels": [[0, 10, "THREAT_ACTOR"], [21, 35, "VULNERABILITY"]]}
+{"text": "Indicators such as a1b2c3d4e5f6g7h8i9j0 were associated with Cobalt Group.", "labels": [[19, 39, "INDICATOR"],[61, 73, "THREAT_ACTOR"]]}
