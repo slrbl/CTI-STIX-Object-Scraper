@@ -50,7 +50,8 @@ options:
   -x, --extract EXTRACT
                         Extract entities from a new text (added it after the -x)
   -e, --entity ENTITY   The entity to extract - All entities will extracted by default
-  -t, --test TEST       Test performances for a labelled data file (add path after -t)
+  -t, --test TEST       Test performances for a labelled data file (add file path after -t) for a given entity (use -e to define the
+                        entity
 ```
 
 This is an example of threat intelligence data extraction from a raw text:
