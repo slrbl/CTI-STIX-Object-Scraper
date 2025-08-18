@@ -7,11 +7,13 @@ import configparser
 from utils import *
 
 def extract_ner(input_text,entity):
+
     # Initialize the parser
     config = configparser.ConfigParser()
 
     # Read the config file
     config.read('config.ini')
+
     # Extraction prompt
     prompt_description=config['PROMPT']['description']
     extractions=[]
@@ -54,7 +56,7 @@ def extract_ner(input_text,entity):
     return findings
 
 
-def extract_label(data_entry):
+def extract_label(data_entry,entity):
     extracted_names=[]
     for label in data_entry['labels']:
         if entity.upper() in label:
@@ -76,18 +78,18 @@ def get_labelled_data(test_json):
 def main():
 
     # Text with a medication mention
-    parser = argparse.ArgumentParser(description="Example argparse script.")
+    parser = argparse.ArgumentParser(description="STIX NER main script. You can use it to extract entities or to test performances.")
 
     # Positional argument
     parser.add_argument("-x","--extract", help="Extract entities from a new text (added it after the -x)")
     parser.add_argument("-e","--entity", help="The entity to extract - All entities will extracted by default")
-    parser.add_argument("-t","--test", help="Test performances for a labelled data file (add path after -t)")
+    parser.add_argument("-t","--test", help="Test performances for a labelled data file (add file path after -t) for a given entity (use -e to define the entity")
 
     args = parser.parse_args()
     
     entity=args.entity
 
-    input_text = "A cybercriminal group known as Ember Fox launched a campaign against an energy sector company by exploiting an unpatched Apache Struts vulnerability (CVE-2017-5638) in a public-facing web server. They deployed Metasploit to gain a reverse shell, then installed NanoCore RAT for persistence and surveillance. Analysts detected the intrusion through unusual outbound traffic to dynamic DNS domains and new registry run keys."
+    placeholder_input_text = "A cybercriminal group known as Ember Fox launched a campaign against an energy sector company by exploiting an unpatched Apache Struts vulnerability (CVE-2017-5638) in a public-facing web server. They deployed Metasploit to gain a reverse shell, then installed NanoCore RAT for persistence and surveillance. Analysts detected the intrusion through unusual outbound traffic to dynamic DNS domains and new registry run keys."
 
     # Run predict/extract mode 
     if args.extract != None:
@@ -96,6 +98,9 @@ def main():
 
     # Run test mode 
     elif args.test != None:
+        if entity==None:
+            print('You need to choose an entity: user -e argument')
+            sys.exit(1)
         data=get_labelled_data(args.test)
         total=len(data)
         count,correct,FP,TP,TN,FN=0,0,0,0,0,0
@@ -108,7 +113,7 @@ def main():
                 print(entry)
             except:
                 continue
-            extracted_names=extract_label(entry)
+            extracted_names=extract_label(entry,entity)
             print("Actual {} entities from the labelled data:".format(entity))
             print(extracted_names)
             print("Extracted entities:")
