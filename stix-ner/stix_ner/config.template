@@ -1,0 +1,10 @@
+[LLM]
+model:your_ollama_model      
+url:http://127.0.0.1:11434
+token:
+
+[PROMPT]
+description:"Extract threat intelligence information if they are mentioned including tool, threat actor, attack pattern, sector, country, vulnerability, malware and indicator in the order they appear in the text."
+example:"The threat actor group known as Silver Spear targeted the aviation sector in France using a watering hole attack. They exploited a vulnerability in Internet Explorer (CVE-2021-26411) to drop TrickBot. The attackers leveraged the Cobalt Strike tool for lateral movement, and communications were observed with silverspear-c2[.]aero."
+labels:"{'threat_actor':'Silver Spear','sector':'aviation','country':'France','attack_pattern':'watering hole','vulnerability':'CVE-2021-26411','malware':'TrickBot','tool':'Cobalt Strike','indicator':'silverspear-c2[.]aero'}"
+
