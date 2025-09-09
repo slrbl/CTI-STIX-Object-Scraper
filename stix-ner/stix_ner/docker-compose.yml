@@ -1,0 +1,13 @@
+version: '1.0'
+services:
+  stix_ner:
+    build: .
+    command: uvicorn api:app --reload --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+  ollama:
+    image: ollama/ollama
+    #command: serve
+    command: serve # 👈 this explicitly runs `ollama serve`
+    ports:
+      - "11434:11434"
