@@ -37,6 +37,7 @@ def extract_ner(input_text,entity):
         language_model_type=lx.inference.OllamaLanguageModel,
         model_id=config['LLM']['model'],               
         model_url=config['LLM']['url'], 
+        debug=False
     )
 
     if entity!=None:
