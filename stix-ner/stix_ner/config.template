@@ -1,5 +1,6 @@
 [LLM]
-model:your_ollama_model      
+model:your_ollama_model
+# In url replace '127.0.0.1' by the ip where ollama is served if not served locally, or by 'ollama' if you are using docker    
 url:http://127.0.0.1:11434
 token:
 

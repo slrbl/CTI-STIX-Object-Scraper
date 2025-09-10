@@ -4,15 +4,39 @@ import json
 import argparse
 import sys
 import configparser
+import requests
 from utils import *
+
+
+
+
+
+
+def pull_model(model_name,url):
+    response = requests.post('{}/api/pull'.format(url), json={"name": model_name}, stream=True)
+    if response.status_code == 200:
+        print(f"Pulling model: {model_name}")
+        for line in response.iter_lines():
+            if line:
+                print(line.decode('utf-8'))
+        print("Model pulled successfully.")
+    else:
+        print(f"Failed to pull model: {response.status_code}")
+        print(response.text)
+
 
 def extract_ner(input_text,entity):
 
     # Initialize the parser
     config = configparser.ConfigParser()
-
+    
     # Read the config file
     config.read('config.ini')
+
+    # Pull model
+    print("............................. Model pull started")
+    pull_model(config['LLM']['model'],config['LLM']['url'])
+    print("............................. Model pull end")
 
     # Extraction prompt
     prompt_description=config['PROMPT']['description']
@@ -77,6 +101,7 @@ def get_labelled_data(test_json):
 
 
 def main():
+    
 
     # Text with a medication mention
     parser = argparse.ArgumentParser(description="STIX NER main script. You can use it to extract entities or to test performances.")
