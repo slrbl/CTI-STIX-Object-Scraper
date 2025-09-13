@@ -9,8 +9,11 @@ TBD
 ## Prerequisites
 
 ### Ollama
-You need to install Ollama on your local machines. More details can be found at https://ollama.com.
+### Using Docker 
+Ollama is included in the provided configuration. 
 
+### Using without Docker
+You need to install Ollama on your local machine or to set the URL where it is running as service in your config file. 
 
 ## Using a Python virtual env
 ```shell
@@ -76,6 +79,15 @@ data = {"text": "A cybercriminal group known as Ember Fox launched a campaign ag
 response = requests.post(url, json=data)
 ```
 
+## Using Docker
+```shell
+docker-compose build
+docker-compose up
+```
+Once the docker service is running, you can use it as using the API.
+
+If you are running an API  request for the first time after building the service using ```docker-compose build``` for the first time, then it is expected that the call time more time to pull the defined Ollama model.
+
 ## TODO 
 Adding the possibility to use a spaCy based NER model\
-Putting in place docker container
+Putting in place docker container DONE
